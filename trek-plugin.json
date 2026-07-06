@@ -1,0 +1,38 @@
+{
+  "id": "auto-itinerary",
+  "name": "Auto Itinerary",
+  "version": "0.1.0",
+  "apiVersion": 1,
+  "author": "TeamCastaldi",
+  "description": "Turns emailed business-trip calendar invites into live TREK trips automatically.",
+  "license": "MIT",
+  "homepage": "https://github.com/teamcastaldi/trek-plugin-auto-itinerary",
+  "type": "integration",
+  "trek": ">=3.2.1 <4.0.0",
+  "nativeModules": false,
+  "permissions": [
+    "db:own"
+  ],
+  "requiredAddons": [],
+  "pluginDependencies": [],
+  "settings": [
+    { "key": "imap_host", "label": "IMAP host", "input_type": "text", "scope": "instance", "required": true, "hint": "Also add as an http:outbound + egress host once ingestion is wired up." },
+    { "key": "imap_port", "label": "IMAP port", "input_type": "number", "scope": "instance", "required": true, "placeholder": "993" },
+    { "key": "imap_tls", "label": "IMAP security", "input_type": "select", "scope": "instance", "required": true, "options": [
+      { "value": "tls", "label": "TLS" },
+      { "value": "starttls", "label": "STARTTLS" }
+    ] },
+    { "key": "imap_user", "label": "IMAP username", "input_type": "text", "scope": "instance", "required": true },
+    { "key": "imap_password", "label": "IMAP password", "input_type": "password", "scope": "instance", "required": true, "secret": true },
+    { "key": "imap_folder", "label": "IMAP folder", "input_type": "text", "scope": "instance", "required": false, "placeholder": "INBOX" },
+    { "key": "sender_allowlist", "label": "Sender allowlist", "input_type": "text", "scope": "instance", "required": false, "hint": "Comma-separated sender addresses. Empty allows any sender." },
+    { "key": "trek_base_url", "label": "TREK base URL", "input_type": "text", "scope": "instance", "required": true, "hint": "Public APP_URL of this TREK instance, e.g. https://trek.example.com. Used for both /oauth/token and /mcp." },
+    { "key": "mcp_client_id", "label": "MCP machine client ID", "input_type": "text", "scope": "instance", "required": true, "hint": "Created under Settings -> Integrations -> MCP -> OAuth Clients -> Machine client." },
+    { "key": "mcp_client_secret", "label": "MCP machine client secret", "input_type": "password", "scope": "instance", "required": true, "secret": true },
+    { "key": "mcp_scopes", "label": "MCP scopes", "input_type": "text", "scope": "instance", "required": false, "placeholder": "trips:write places:write reservations:write trips:share" },
+    { "key": "auto_share", "label": "Auto-publish share link", "input_type": "select", "scope": "instance", "required": false, "options": [
+      { "value": "yes", "label": "Yes" },
+      { "value": "no", "label": "No" }
+    ] }
+  ]
+}
