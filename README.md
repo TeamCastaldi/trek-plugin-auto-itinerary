@@ -9,8 +9,9 @@ inbox on a schedule, parses the `.ics` payload, and creates a fully-structured T
 transport, reservations) via TREK's built-in MCP server — so the family can follow along on a public
 share link without the traveler ever opening the app.
 
-**Status:** scaffold only. Ingestion (IMAP + `.ics` parsing), MCP trip-building, and the idempotency
-ledger are not yet implemented — see the project plan for the milestone breakdown.
+**Status:** scaffold only. The `processed_invites` ledger schema is created on load, but nothing yet
+reads or writes to it — ingestion (IMAP + `.ics` parsing), MCP trip-building, and the idempotency logic
+that uses this ledger are not yet implemented. See the project plan for the milestone breakdown.
 
 ## Permissions
 
