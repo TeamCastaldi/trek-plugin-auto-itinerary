@@ -1,0 +1,4 @@
+node_modules/
+server/
+plugin.zip
+npm-debug.log*

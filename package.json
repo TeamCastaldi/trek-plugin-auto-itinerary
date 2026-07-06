@@ -1,0 +1,20 @@
+{
+  "name": "auto-itinerary",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Turns emailed business-trip calendar invites into live TREK trips automatically.",
+  "engines": {
+    "node": ">=20.12.0"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "dev": "npm run build && npx trek-plugin-sdk dev",
+    "validate": "npx trek-plugin-sdk validate",
+    "pack": "npm run build && npx trek-plugin-sdk pack"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "trek-plugin-sdk": "^1.3.1"
+  }
+}
