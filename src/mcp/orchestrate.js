@@ -51,9 +51,21 @@ function schemaWarning(toolsMap, toolName, payload) {
  * into that single trip per docs/PLAN.md's locked "one invite -> one trip" decision. Applies
  * `filterActiveEvents` itself, so callers do not need to pre-filter cancelled events. A failure in
  * any create_* call throws immediately — no partial-continue-anyway logic; a partially-built trip
- * on failure is an accepted, visible gap until TODO M4's ledger/reconciliation lands.
+ * on failure is an accepted, visible gap covered by the ledger's `error` status + resume-from-
+ * `trip_id` recovery (docs/PLAN.md §4, TODO M4).
+ *
+ * `existingTripId` resumes a crash-recovered build: `create_trip` is skipped and sub-entity calls
+ * target that trip directly. `onTripCreated(tripId)` fires immediately after a *fresh* `create_trip`
+ * succeeds (not on a resumed build), so the caller can persist the trip id to the ledger before any
+ * sub-entity calls are attempted.
  */
-async function buildTripForMessage(session, message, classifiedEvents, config) {
+async function buildTripForMessage(
+  session,
+  message,
+  classifiedEvents,
+  config,
+  { existingTripId = null, onTripCreated } = {}
+) {
   const trace = [];
   const activeEvents = filterActiveEvents(classifiedEvents);
   if (!activeEvents.length) {
@@ -68,19 +80,24 @@ async function buildTripForMessage(session, message, classifiedEvents, config) {
   }
 
   const events = activeEvents.map(({ event }) => event);
-  const { startDate, endDate } = computeTripDateRange(events);
-  const tripPayload = buildCreateTripPayload({ title: events[0].summary, startDate, endDate });
-  record('create_trip', tripPayload);
 
-  const tripResult = await session.callTool('create_trip', tripPayload);
-  // SCHEMA-GUESS: exact result field name for the created trip's id is unverified.
-  const tripId = tripResult && tripResult.tripId;
+  let tripId = existingTripId;
   if (!tripId) {
-    throw new Error(
-      `create_trip did not return a usable trip id; result was: ${JSON.stringify(tripResult)}`
-    );
+    const { startDate, endDate } = computeTripDateRange(events);
+    const tripPayload = buildCreateTripPayload({ title: events[0].summary, startDate, endDate });
+    record('create_trip', tripPayload);
+
+    const tripResult = await session.callTool('create_trip', tripPayload);
+    // SCHEMA-GUESS: exact result field name for the created trip's id is unverified.
+    tripId = tripResult && tripResult.tripId;
+    if (!tripId) {
+      throw new Error(
+        `create_trip did not return a usable trip id; result was: ${JSON.stringify(tripResult)}`
+      );
+    }
+    trace.push({ step: 'create_trip', tool: 'create_trip', ok: true });
+    if (onTripCreated) await onTripCreated(tripId);
   }
-  trace.push({ step: 'create_trip', tool: 'create_trip', ok: true });
 
   let entityCount = 0;
   for (const { type, event } of activeEvents) {
