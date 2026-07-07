@@ -49,7 +49,7 @@ nothing matches (fully backward-compatible for single-account installs).
 ### TODO M8 — Publish to the community registry (long-term, optional)
 
 **Short-term deployment (private/single-account use) is done** — confirmed working against the real
-family instance; see README's Deployment section for the actual steps (`pack` → sideload via
+family instance; see README's Setup & Deployment section for the actual steps (`pack` → sideload via
 Admin → Plugins → activate → configure settings). No signing, no GitHub release, no registry PR
 needed for that path at all.
 
@@ -230,5 +230,5 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
   - **Sideload deployment confirmed** (2026-07-07): `npm run pack` → Admin → Plugins upload on
     `travel.castaldifamily.com` succeeded, no signing required, landed inactive, activated
     manually, settings configured. This is the complete deployment path for private/single-account
-    use — see README's Deployment section. Split TODO M8 (previously "Package, sign, publish") into
+    use — see README's Setup & Deployment section. Split TODO M8 (previously "Package, sign, publish") into
     this now-done short-term path and a long-term-only "publish to the community registry" TODO.

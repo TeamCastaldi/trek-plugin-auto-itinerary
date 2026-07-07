@@ -40,7 +40,7 @@ The host(s) here **must exactly match** the `imap_host` instance setting and the
 `EGRESS_HOSTS` is unset, `npm run build`/`dev` still work (useful for casual iteration) but the
 manifest ships with no egress permissions — set it for real before `npm run pack`.
 
-## Deployment (single-user, today)
+## Setup & Deployment (single-user, today)
 
 This is the complete path for private/family use — confirmed working end-to-end against a real
 TREK instance. There is no public registry involved; TREK's Admin → Plugins panel accepts a direct
