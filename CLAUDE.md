@@ -50,6 +50,22 @@ test. See `docs/PLAN.md` §5.
 a `docs/screenshot.png` (note: `docs/` is excluded from the packed artifact, so this only matters for
 the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
 
+### TODO M7 (v1.1) — Extraction & Routing Refactor
+
+Update `src/extract.js` to fall back to the plain text (`mail.text`) or HTML (`mail.html`) body if a `text/calendar` attachment or inline part is not found. In `src/index.js`, introduce a routing layer inside the `poll-inbox` job: route `.ics` payloads to the existing `node-ical` pipeline, and route standard text/HTML payloads to a new unstructured parsing engine.
+
+### TODO M8 (v1.1) — AMEX Parsing Engine (`src/parse-amex.js`)
+
+Build the parser to extract dates, locations, flight/hotel details, and PNRs from AMEX Travel emails. *Crucial architectural constraint:* This parser must output data in the exact same normalized `VEVENT` object shape used by the `.ics` parser (containing `summary`, `start`, `end`, `location`, `description`). This allows the downstream classifier (`src/classify.js`) and payload builders (`src/mcp/payloads.js`) to remain completely untouched.
+
+### TODO M9 (v1.1) — Ledger & Idempotency Pivot
+
+Modify the `processed_invites` database schema and idempotency logic. Since AMEX emails lack the standard iCalendar `UID` and `SEQUENCE` fields, implement a secondary deduplication strategy. Use a deterministic hash (e.g., `hash(PNR + StartDate + Destination)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates and prevent duplicate trip creation.
+
+### TODO M10 (v1.1) — Fixtures, Verification & Release
+
+Add raw `.eml` fixtures for various AMEX Travel emails. Write unit tests for `src/parse-amex.js` to ensure the normalized `VEVENT` output matches expectations. Update the `README.md` to instruct admins to add `*@amextravel.com` to the `sender_allowlist`. Bump version to `1.1.0`, validate, pack, and publish.
+
 ## Version history
 
 - **0.1.0** (2026-07-06)
