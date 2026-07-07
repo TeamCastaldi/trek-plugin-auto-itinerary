@@ -118,7 +118,8 @@ mirrored exactly, based on the `EGRESS_HOSTS` build env var.
 
 **Instance settings** (scaffolded in `trek-plugin.json`, `scope: "instance"`, admin-set once):
 `imap_host`, `imap_port`, `imap_tls` (`tls`/`starttls`), `imap_user`, `imap_password` (secret),
-`imap_folder`, `sender_allowlist` (will need e.g. `*@amextravel.com` in v1.1), `trek_base_url`,
+`imap_folder`, `processed_folder` (M4: mail-flag second guard destination, optional — `\Seen`-only
+if blank), `sender_allowlist` (will need e.g. `*@amextravel.com` in v1.1), `trek_base_url`,
 `mcp_client_id`, `mcp_client_secret` (secret), `mcp_scopes`, `auto_share`. The poll cron interval
 is defined in code (`src/index.js`), not settings.
 
@@ -189,22 +190,38 @@ normalized `VEVENT` interface so the classifier and MCP payload builders remain 
 **Goal:** each invite yields exactly one trip/entity no matter how often the cron re-reads the mailbox,
 including safe handling of updates and partial failures.
 
-- **Primary key:** iCalendar `UID` (globally unique per event) + `SEQUENCE` (bumped on updates).
-  For v1.1 unstructured emails (AMEX, Concur), this pivots to a deterministic hash (e.g.,
-  `hash(PNR + StartDate + Destination)`) or RFC822 `Message-Id` (M9).
-- **Ledger in `ctx.db`** (own SQLite, `db:own`) — schema already migrated in `src/index.js`:
+- **Primary key resolution (M4, implemented in `src/ledger.js`):** a single message can contain
+  multiple VEVENTs with *different* `UID`s (e.g. `test/fixtures/multi-vevent.ics`), but the locked
+  decision is one message = one trip. So the ledger's `uid` PK holds the **first active
+  (non-cancelled) event's UID** as a stand-in identifier for the whole message's trip-build — not
+  "every VEVENT's UID." `sequence` holds `max(sequence)` across the message's active events.
+  Secondary guard: RFC822 `Message-Id` (`message_id` column). For v1.1 unstructured emails (AMEX,
+  Concur), this pivots to a deterministic hash (e.g. `hash(PNR + StartDate + Destination)`) or the
+  RFC822 `Message-Id` directly, since those senders lack `UID`/`SEQUENCE` (M9).
+- **Ledger in `ctx.db`** (own SQLite, `db:own`) — schema migrated in `src/index.js`:
   `processed_invites(uid TEXT PRIMARY KEY, message_id TEXT, sequence INT, trip_id TEXT, share_url TEXT,
-  status TEXT, payload_hash TEXT, created_at, updated_at)`. `status ∈ {in_progress, done, error}`.
-  **Not yet wired into any read/write logic — that's M4's job.**
-- **Two-phase write to survive crashes:** insert `in_progress` **before** the first MCP call; flip to
-  `done` after the trip is fully built. If a later run finds `in_progress`, reconcile via `list_trips`/
-  `get_trip_summary` (or a deterministic external key) instead of blindly re-creating.
-- **Mail flags as a second ledger:** only after the ledger row is `done`, mark the message `\Seen` (and
-  optionally set a `$TrekProcessed` keyword or move to a `Processed` folder). Search on **UNSEEN** so the
-  flag is the coarse filter and the DB ledger is the exact guard — belt-and-suspenders.
-- **Updates:** incoming `SEQUENCE > stored` → update the existing `trip_id` (`update_day`/`create_*` deltas)
-  rather than create. **Cancellations** (`METHOD:CANCEL`/`STATUS:CANCELLED`) → mark ledger `cancelled`,
-  optionally revoke share link / delete trip item.
+  status TEXT, payload_hash TEXT, created_at, updated_at)`. `status ∈ {in_progress, done, cancelled,
+  error}`. Wired into `poll-inbox` via `src/ledger.js` (M4).
+- **Two-phase write to survive crashes:** `ledger.beginProcessing` inserts/resumes an `in_progress`
+  row before the first MCP call and **preserves any existing `trip_id`**; `ledger.recordTripCreated`
+  writes `trip_id` immediately after a fresh `create_trip` succeeds (before any sub-entity calls); a
+  later poll that finds a stale `in_progress` row with a stored `trip_id` resumes
+  `buildTripForMessage` against that id (skipping `create_trip`) rather than a `list_trips` search —
+  only a `NULL` `trip_id` on a stale row falls back to a from-scratch retry, since nothing was
+  created yet.
+- **Mail flags as a second ledger:** after the ledger row reaches `done`/`cancelled`,
+  `imap.markProcessed` marks the message `\Seen` and, if the `processed_folder` setting is
+  configured, moves it there — best-effort, never throws, since the DB ledger is the authoritative
+  guard. Search stays on **UNSEEN** so the flag is the coarse filter and the DB ledger is the exact
+  guard — belt-and-suspenders.
+- **Updates (M4 scope, deliberately bounded):** incoming `SEQUENCE > stored` **or** a changed
+  `payload_hash` (a content fingerprint independent of `SEQUENCE`, since senders bump it
+  inconsistently) on an already-`done` invite logs a warning and refreshes the ledger's
+  fingerprint — it does **not** call any MCP update tool. Full per-entity delta updates
+  (`update_day`/re-calling `create_*`) depend on real (currently SCHEMA-GUESS) `inputSchema`s from a
+  live TREK instance and are deferred past M4. **Cancellations**
+  (`METHOD:CANCEL`/`STATUS:CANCELLED`, i.e. all of a message's events are inactive) mark the ledger
+  `cancelled`; the trip itself is left as-is (no auto-revoke/delete) for the same reason.
 
 ---
 

@@ -35,12 +35,6 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M4 — Idempotency & state ledger
-
-Wire the `processed_invites` ledger (schema already migrated in `src/index.js`) into real use:
-two-phase write (`in_progress` → `done`), `SEQUENCE`-based update detection, `CANCEL` handling,
-mail-flag second guard (`\Seen` / processed folder). See `docs/PLAN.md` §4.
-
 ### TODO M5 — Verification harness
 
 `createMockHost` permission-scope tests (`PERMISSION_DENIED` / `RESOURCE_FORBIDDEN`), mock-MCP
