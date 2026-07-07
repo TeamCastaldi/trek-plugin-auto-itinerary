@@ -1,4 +1,4 @@
-const { fetchUnseenMessages } = require('../src/imap');
+const { openConnection, searchUnseen } = require('../src/imap');
 
 async function main() {
   const required = ['SMOKE_IMAP_HOST', 'SMOKE_IMAP_PORT', 'SMOKE_IMAP_TLS', 'SMOKE_IMAP_USER', 'SMOKE_IMAP_PASSWORD'];
@@ -20,8 +20,18 @@ async function main() {
   };
 
   console.log(`[smoke-imap] connecting to ${config.imap_host}:${config.imap_port} (${config.imap_tls})...`);
-  const messages = await fetchUnseenMessages(config);
-  console.log(`[smoke-imap] connected and authenticated. UNSEEN message count in "${config.imap_folder}": ${messages.length}`);
+  const connection = await openConnection(config);
+  try {
+    // searchUnseen never mutates flags — this is a pure read-only diagnostic, safe to run
+    // against a real mailbox without affecting what the actual plugin will see.
+    const messages = await searchUnseen(connection, config);
+    console.log(`[smoke-imap] connected and authenticated. UNSEEN message count in "${config.imap_folder}": ${messages.length}`);
+    for (const message of messages) {
+      console.log(`  - uid=${message.uid} messageId=${message.messageId || '(none)'}`);
+    }
+  } finally {
+    connection.end();
+  }
 }
 
 main().catch((err) => {
