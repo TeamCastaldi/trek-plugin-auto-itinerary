@@ -52,6 +52,15 @@ real for `npm run pack`.
    App passwords) in `imap_password` rather than the account's real password — 2-Step Verification is
    on by default for most Workspace accounts. A Workspace admin can also disable IMAP access org-wide
    (Admin console → Apps → Google Workspace → Gmail → IMAP access); confirm it's enabled first.
+
+   **Alternate addresses aren't separate mailboxes:** a Workspace "alternate email" (e.g.
+   `trek@castaldifamily.com`) is a send-as alias into the *primary* account's mailbox, not its own
+   IMAP-authenticatable inbox. Put the **primary account** in `imap_user` (e.g.
+   `nathan@castaldifamily.com`) — mail addressed to the alternate address still lands in that same
+   mailbox. The alternate address is what you add as a guest on the business-trip calendar invite; the
+   primary account is what this plugin logs into IMAP as. Confirmed empirically: authenticating as the
+   alternate address fails, authenticating as the primary account succeeds and sees the alternate
+   address's mail.
 3. `npm run dev` to run locally against `trek-plugin-sdk dev` (loads `dev-fixtures.json` for
    `ctx.trips`/`ctx.users` if present).
 4. `npm run pack` to build the distributable `plugin.zip`.

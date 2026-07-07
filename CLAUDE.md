@@ -80,4 +80,11 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     generated at build time from `trek-plugin.template.json`, with `http:outbound:<host>` + `egress`
     entries populated per host from the `EGRESS_HOSTS` env var, so each installer bakes in their own
     IMAP host without hand-editing the manifest. Live IMAP smoke test script added
-    (`scripts/smoke-imap.js`, env-var driven, skips cleanly without credentials).
+    (`scripts/smoke-imap.js`, env-var driven, skips cleanly without credentials). **Live smoke test run
+    and passed** against the real family mailbox (Gmail/Workspace, `imap.gmail.com:993` TLS) — real
+    `tls.connect` + IMAP login + UNSEEN search succeeded, empirically confirming the R1 egress
+    prediction (M0.5) for actual raw IMAP traffic, not just source-code reasoning. Also confirmed
+    empirically: a Workspace "alternate email" is a send-as alias into the *primary* account's mailbox,
+    not its own IMAP-authenticatable inbox — `imap_user` must be the primary account
+    (`nathan@castaldifamily.com`), while the alternate address (`trek@castaldifamily.com`) is only what
+    gets added as a guest on the calendar invite.
