@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const { createSession } = require('../src/mcp/client');
 const { filterActiveEvents, buildTripForMessage } = require('../src/mcp/orchestrate');
+const { buildCreateTripPayload, computeTripDateRange } = require('../src/mcp/payloads');
 const { parseEvents } = require('../src/parse');
 const { classifyEvent } = require('../src/classify');
 
@@ -23,6 +24,14 @@ const { classifyEvent } = require('../src/classify');
  *
  * Set E2E_SCHEMA_TOOLS=<comma-separated tool names> to additionally dump the inputSchema for any
  * other live tools (e.g. day-related tools not tied to any fixture) regardless of E2E_FIXTURE.
+ *
+ * Set E2E_INSPECT_DAYS=1 to create ONE real, clearly-labeled throwaway trip (title prefixed
+ * "[schema-inspection..."), print create_trip's raw result and get_trip_summary's raw result, then
+ * stop WITHOUT creating any place/transport/accommodation/reservation — this is the only way to see
+ * how a live instance auto-generates days from a trip's date range and what get_trip_summary
+ * returns, since that's response shape, not something `tools/list`'s inputSchema describes. Ignored
+ * if E2E_DRY_RUN is also set (E2E_DRY_RUN's "no create_* calls" contract always wins). You will need
+ * to manually delete the resulting trip from the TREK app afterward — there is no delete_trip tool.
  */
 function toolNameForType(type) {
   if (type === 'flight' || type === 'train') return 'create_transport';
@@ -89,6 +98,31 @@ async function main() {
 
   if (process.env.E2E_DRY_RUN) {
     console.log('[e2e-mcp] E2E_DRY_RUN set — stopping before any create_* call. No trip was created.');
+    return;
+  }
+
+  if (process.env.E2E_INSPECT_DAYS) {
+    const events = activeEvents.map(({ event }) => event);
+    const { startDate, endDate } = computeTripDateRange(events);
+    const tripPayload = buildCreateTripPayload({
+      title: `[schema-inspection, safe to delete] ${fixtureName} ${new Date().toISOString()}`,
+      startDate,
+      endDate,
+    });
+    console.log('[e2e-mcp] E2E_INSPECT_DAYS set — creating ONE throwaway trip to inspect auto-generated days.');
+    console.log('[e2e-mcp] create_trip payload:', JSON.stringify(tripPayload));
+    const tripResult = await session.callTool('create_trip', tripPayload);
+    console.log('[e2e-mcp] create_trip raw result:', JSON.stringify(tripResult, null, 2));
+
+    const tripId = tripResult && tripResult.trip && tripResult.trip.id;
+    if (tripId) {
+      const summary = await session.callTool('get_trip_summary', { tripId });
+      console.log('[e2e-mcp] get_trip_summary raw result:', JSON.stringify(summary, null, 2));
+    }
+    console.log(
+      `[e2e-mcp] IMPORTANT: manually delete trip id ${tripId} ("${tripPayload.title}") from the ` +
+        'TREK app — it was created only to inspect auto-generated days and there is no delete_trip tool.'
+    );
     return;
   }
 
