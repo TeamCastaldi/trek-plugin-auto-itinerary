@@ -77,7 +77,6 @@ function computePayloadHash(activeEvents) {
   const events = activeEvents
     .map(({ event }) => ({
       uid: event.uid,
-      sequence: event.sequence,
       summary: event.summary,
       location: event.location,
       description: event.description,

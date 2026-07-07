@@ -149,6 +149,24 @@ test('computePayloadHash is stable for identical events and changes when a field
   assert.notEqual(hash1, ledger.computePayloadHash(changed));
 });
 
+test('computePayloadHash is independent of SEQUENCE, so a pure sequence bump does not look like a content change', () => {
+  const baseEvent = {
+    uid: 'a@example.com',
+    sequence: 0,
+    summary: 'Flight to Denver',
+    location: 'DEN',
+    description: 'PNR: ABC',
+    start: new Date('2026-08-05T14:00:00Z'),
+    end: new Date('2026-08-05T16:00:00Z'),
+  };
+
+  const hash1 = ledger.computePayloadHash([{ type: 'flight', event: baseEvent }]);
+  const hash2 = ledger.computePayloadHash([
+    { type: 'flight', event: { ...baseEvent, sequence: baseEvent.sequence + 1 } },
+  ]);
+  assert.equal(hash1, hash2);
+});
+
 test('computePayloadHash is order-independent across multiple events', () => {
   const eventA = { uid: 'a@example.com', sequence: 0, summary: 'A', location: '', description: '', start: null, end: null };
   const eventB = { uid: 'b@example.com', sequence: 0, summary: 'B', location: '', description: '', start: null, end: null };
