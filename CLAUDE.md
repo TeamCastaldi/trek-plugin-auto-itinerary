@@ -35,13 +35,6 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M2 — Ingestion + `.ics` parsing
-Real IMAP connect (`imap-simple`/`node-imap`) → `mailparser` (extract `text/calendar`) → `node-ical`
-(parse `VEVENT`s) → the event-type classifier in `docs/PLAN.md` §3. Unit-test against fixture
-`.eml`/`.ics` files. Include the live IMAP smoke test (first real connect against a real mailbox from a
-real TREK instance) to empirically confirm the source-verified R1 prediction in `docs/PLAN.md`.
-**Needs:** real or fixture IMAP credentials.
-
 ### TODO M3 — MCP client + trip-build orchestration
 Token manager for `client_credentials` against the public `APP_URL` host (`POST /oauth/token`, cache
 ~55 min, no refresh token), Streamable HTTP session to `/mcp`, `tools/list` to read live `inputSchema`s,
@@ -78,3 +71,20 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     clean; bundle smoke-tested. (PR #1)
   - Addressed Copilot PR review: clarified README ledger-status wording, declared `engines.node
     >=20.12.0` in `package.json` (matches `@clack/core`'s transitive requirement via `trek-plugin-sdk`).
+  - M2 — Ingestion + `.ics` parsing: real `imap-simple` connect (`src/imap.js`) → `mailparser`
+    calendar-part extraction (`src/extract.js`) → `node-ical` VEVENT normalization (`src/parse.js`,
+    including all-day/TZ/multi-VEVENT/CANCEL handling) → keyword classifier (`src/classify.js`), wired
+    into the `poll-inbox` job handler (log-only for now — MCP calls and ledger writes are still M3/M4).
+    13 fixture-based unit tests (`node:test`, no new test-framework dependency) cover
+    `.eml`/`.ics` extraction and parsing. Resolved manifest open note **O1**: `trek-plugin.json` is now
+    generated at build time from `trek-plugin.template.json`, with `http:outbound:<host>` + `egress`
+    entries populated per host from the `EGRESS_HOSTS` env var, so each installer bakes in their own
+    IMAP host without hand-editing the manifest. Live IMAP smoke test script added
+    (`scripts/smoke-imap.js`, env-var driven, skips cleanly without credentials). **Live smoke test run
+    and passed** against the real family mailbox (Gmail/Workspace, `imap.gmail.com:993` TLS) — real
+    `tls.connect` + IMAP login + UNSEEN search succeeded, empirically confirming the R1 egress
+    prediction (M0.5) for actual raw IMAP traffic, not just source-code reasoning. Also confirmed
+    empirically: a Workspace "alternate email" is a send-as alias into the *primary* account's mailbox,
+    not its own IMAP-authenticatable inbox — `imap_user` must be the primary account
+    (`you@example.com`), while the alternate address (`trek@example.com`) is only what
+    gets added as a guest on the calendar invite.

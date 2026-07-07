@@ -1,0 +1,33 @@
+From: bookings@testairlines.com
+To: family-inbox@example.com
+Subject: Your flight itinerary UA123
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER-BOUNDARY"
+
+--OUTER-BOUNDARY
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 7bit
+
+Your flight itinerary is attached as a calendar invite.
+
+--OUTER-BOUNDARY
+Content-Type: text/calendar; charset="UTF-8"; method=REQUEST; name="invite.ics"
+Content-Transfer-Encoding: 7bit
+Content-Disposition: attachment; filename="invite.ics"
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Test Airlines//Booking//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:flight-abc123@testairlines.com
+SEQUENCE:0
+SUMMARY:Flight UA123 to SFO
+DESCRIPTION:PNR: ABC123. United Airlines flight departing gate 42.
+LOCATION:San Francisco International Airport
+DTSTART:20260801T120000Z
+DTEND:20260801T140000Z
+END:VEVENT
+END:VCALENDAR
+
+--OUTER-BOUNDARY--

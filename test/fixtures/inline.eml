@@ -1,0 +1,32 @@
+From: reservations@thebistro.com
+To: family-inbox@example.com
+Subject: Dinner reservation confirmed
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUTER-BOUNDARY"
+
+--OUTER-BOUNDARY
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: 7bit
+
+Your dinner reservation is confirmed. See attached calendar entry.
+
+--OUTER-BOUNDARY
+Content-Type: text/calendar; charset="UTF-8"; method=REQUEST
+Content-Transfer-Encoding: 7bit
+
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//The Bistro//Booking//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:dinner-reservation-42@thebistro.com
+SEQUENCE:0
+SUMMARY:Dinner reservation for 2
+DESCRIPTION:Table booked under Castaldi.
+LOCATION:The Bistro, 12 Market St
+DTSTART:20260801T190000Z
+DTEND:20260801T210000Z
+END:VEVENT
+END:VCALENDAR
+
+--OUTER-BOUNDARY--

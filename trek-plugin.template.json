@@ -16,7 +16,7 @@
   "requiredAddons": [],
   "pluginDependencies": [],
   "settings": [
-    { "key": "imap_host", "label": "IMAP host", "input_type": "text", "scope": "instance", "required": true, "hint": "Also add as an http:outbound + egress host once ingestion is wired up." },
+    { "key": "imap_host", "label": "IMAP host", "input_type": "text", "scope": "instance", "required": true, "hint": "Must exactly match a host in the EGRESS_HOSTS env var used at build time (see README), or the egress guard silently blocks the connection." },
     { "key": "imap_port", "label": "IMAP port", "input_type": "number", "scope": "instance", "required": true, "placeholder": "993" },
     { "key": "imap_tls", "label": "IMAP security", "input_type": "select", "scope": "instance", "required": true, "options": [
       { "value": "tls", "label": "TLS" },
