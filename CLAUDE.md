@@ -35,14 +35,6 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M3 — MCP client + trip-build orchestration
-Token manager for `client_credentials` against the public `APP_URL` host (`POST /oauth/token`, cache
-~55 min, no refresh token), Streamable HTTP session to `/mcp`, `tools/list` to read live `inputSchema`s,
-then `create_trip` → `create_and_assign_place`/`create_place` → `create_accommodation`/
-`create_transport`/`create_reservation` → optional `create_share_link`. See `docs/PLAN.md` §3.
-**Needs:** live TREK instance + MCP machine client (`client_id`/`client_secret`, scopes `trips:write
-places:write reservations:write trips:share`).
-
 ### TODO M4 — Idempotency & state ledger
 Wire the `processed_invites` ledger (schema already migrated in `src/index.js`) into real use:
 two-phase write (`in_progress` → `done`), `SEQUENCE`-based update detection, `CANCEL` handling,
@@ -88,3 +80,23 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     not its own IMAP-authenticatable inbox — `imap_user` must be the primary account
     (`you@example.com`), while the alternate address (`trek@example.com`) is only what
     gets added as a guest on the calendar invite.
+  - M3 — MCP client + trip-build orchestration: hand-rolled Streamable HTTP JSON-RPC client
+    (`src/mcp/client.js`) — no `@modelcontextprotocol/sdk` dependency, rejected after research showed
+    its client transport still requires wrapping `fetch` for auth (typescript-sdk#495) while pulling in
+    express/hono/cross-spawn irrelevant to a pure outbound client. Token manager (`src/mcp/token.js`,
+    form-urlencoded `client_credentials`, ~55 min cache, force-refresh on 401) → session `initialize` +
+    `Mcp-Session-Id` tracking → `tools/list` (cached per session) → orchestration
+    (`src/mcp/orchestrate.js`) folding one invite's VEVENTs into one `create_trip` →
+    `create_and_assign_place` → `create_accommodation`/`create_transport`/`create_reservation` →
+    optional `create_share_link`, per the locked "one invite → one trip" decision. Every guessed MCP
+    field name (real `inputSchema`s are undocumented pending a live `tools/list` call) is isolated in
+    `src/mcp/payloads.js` behind `SCHEMA-GUESS` comments, plus a best-effort schema-presence warning
+    logged (never a hard failure) when a guess doesn't match the live schema. Wired into `poll-inbox` in
+    place of the M2 log-only loop. 27 new tests (`node:test`) cover the token cache/refresh, session
+    handshake/retry (401/429/403, JSON and SSE response parsing) against a `node:http`-based mock TREK
+    server, pure payload builders, and orchestration sequencing (single/multi-VEVENT folding,
+    mid-sequence failure propagation, cancelled-event filtering) against a fake session. Deferred to M4
+    by design: ledger wiring, update/cancellation-of-existing-trip detection, and any duplicate-trip
+    guard for the repeat-processing gap this creates until M4's mail-flagging lands. Full live-instance
+    verification (real OAuth exchange, real tool schemas) not yet done — needs a live TREK instance,
+    tracked as residual risk for M5.

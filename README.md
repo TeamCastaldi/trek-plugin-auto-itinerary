@@ -9,9 +9,12 @@ inbox on a schedule, parses the `.ics` payload, and creates a fully-structured T
 transport, reservations) via TREK's built-in MCP server — so the family can follow along on a public
 share link without the traveler ever opening the app.
 
-**Status:** ingestion + `.ics` parsing implemented (IMAP connect → extract calendar → parse VEVENTs →
-classify by type), logged per run. MCP trip-building and the idempotency ledger wiring are not yet
-implemented. See the project plan for the milestone breakdown.
+**Status:** ingestion + `.ics` parsing (IMAP connect → extract calendar → parse VEVENTs → classify by
+type) and MCP trip-building (token manager → Streamable HTTP session → `create_trip` →
+`create_and_assign_place` → `create_accommodation`/`create_transport`/`create_reservation` →
+optional `create_share_link`) are implemented. The idempotency ledger wiring (update detection,
+cancellation of previously-created trips, mail-flag marking) is not yet implemented — until then, a
+still-unseen message is rebuilt on every poll. See the project plan for the milestone breakdown.
 
 ## Permissions
 
@@ -38,9 +41,12 @@ real for `npm run pack`.
 
 ## Setup
 
-1. Build the bundle: `npm install && EGRESS_HOSTS=<your-imap-host> npm run build` (bundles
-   `src/index.js` + dependencies into `server/index.js` — TREK does not run `npm install` on installed
-   plugins, so runtime dependencies must be bundled in — and regenerates `trek-plugin.json`, see above).
+1. Build the bundle: `npm install && EGRESS_HOSTS=<your-imap-host>,<your-trek-host> npm run build`
+   (bundles `src/index.js` + dependencies into `server/index.js` — TREK does not run `npm install` on
+   installed plugins, so runtime dependencies must be bundled in — and regenerates `trek-plugin.json`,
+   see above). `EGRESS_HOSTS` must include **both** the IMAP host and the TREK instance's own host
+   (parsed from the `trek_base_url` setting below), since MCP calls (`/oauth/token`, `/mcp`) go through
+   the same host-only egress allowlist as IMAP.
 2. Configure instance settings (admin-only, set once): IMAP host/port/security/username/password/folder,
    an optional sender allowlist, the TREK instance's public base URL, and an MCP machine client's
    `client_id`/`client_secret` (create one under **Settings → Integrations → MCP → OAuth Clients →
