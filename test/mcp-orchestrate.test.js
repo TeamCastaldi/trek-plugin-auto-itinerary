@@ -148,3 +148,28 @@ test('logs a schema-check warning (not a hard failure) when a guessed field is m
   assert.ok(warnings.length > 0);
   assert.equal(warnings[0].ok, false);
 });
+
+test('throws a descriptive error if create_trip does not return a usable trip id', async () => {
+  const classifiedEvents = loadClassifiedEvents('generic.ics');
+  const session = fakeSession({
+    results: { create_trip: { unexpectedField: 'oops' } },
+  });
+
+  await assert.rejects(
+    buildTripForMessage(session, { uid: 7 }, classifiedEvents, {}),
+    /create_trip did not return a usable trip id/
+  );
+  // No sub-entity calls should have been attempted with an invalid trip id.
+  assert.ok(!session.calls.some((c) => c.name === 'create_reservation'));
+});
+
+test('buildTripForMessage filters cancelled events itself, even if the caller forgot to pre-filter', async () => {
+  const classifiedEvents = loadClassifiedEvents('cancel.ics');
+  const session = fakeSession({ results: { create_trip: { tripId: 'trip_1' } } });
+
+  const result = await buildTripForMessage(session, { uid: 8 }, classifiedEvents, {});
+
+  assert.equal(result.tripId, null);
+  assert.equal(result.entityCount, 0);
+  assert.equal(session.calls.length, 0);
+});

@@ -48,13 +48,15 @@ function schemaWarning(toolsMap, toolName, payload) {
 
 /**
  * Builds one TREK trip for one invite (email message), folding all of its non-cancelled VEVENTs
- * into that single trip per docs/PLAN.md's locked "one invite -> one trip" decision. A failure in
+ * into that single trip per docs/PLAN.md's locked "one invite -> one trip" decision. Applies
+ * `filterActiveEvents` itself, so callers do not need to pre-filter cancelled events. A failure in
  * any create_* call throws immediately — no partial-continue-anyway logic; a partially-built trip
  * on failure is an accepted, visible gap until TODO M4's ledger/reconciliation lands.
  */
 async function buildTripForMessage(session, message, classifiedEvents, config) {
   const trace = [];
-  if (!classifiedEvents.length) {
+  const activeEvents = filterActiveEvents(classifiedEvents);
+  if (!activeEvents.length) {
     return { tripId: null, shareUrl: null, entityCount: 0, trace };
   }
 
@@ -65,7 +67,7 @@ async function buildTripForMessage(session, message, classifiedEvents, config) {
     if (warning) trace.push(warning);
   }
 
-  const events = classifiedEvents.map(({ event }) => event);
+  const events = activeEvents.map(({ event }) => event);
   const { startDate, endDate } = computeTripDateRange(events);
   const tripPayload = buildCreateTripPayload({ title: events[0].summary, startDate, endDate });
   record('create_trip', tripPayload);
@@ -73,10 +75,15 @@ async function buildTripForMessage(session, message, classifiedEvents, config) {
   const tripResult = await session.callTool('create_trip', tripPayload);
   // SCHEMA-GUESS: exact result field name for the created trip's id is unverified.
   const tripId = tripResult && tripResult.tripId;
+  if (!tripId) {
+    throw new Error(
+      `create_trip did not return a usable trip id; result was: ${JSON.stringify(tripResult)}`
+    );
+  }
   trace.push({ step: 'create_trip', tool: 'create_trip', ok: true });
 
   let entityCount = 0;
-  for (const { type, event } of classifiedEvents) {
+  for (const { type, event } of activeEvents) {
     let placeId;
     if (event.location) {
       const placePayload = buildCreatePlacePayload({

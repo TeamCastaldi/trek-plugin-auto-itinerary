@@ -92,7 +92,8 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     field name (real `inputSchema`s are undocumented pending a live `tools/list` call) is isolated in
     `src/mcp/payloads.js` behind `SCHEMA-GUESS` comments, plus a best-effort schema-presence warning
     logged (never a hard failure) when a guess doesn't match the live schema. Wired into `poll-inbox` in
-    place of the M2 log-only loop. 27 new tests (`node:test`) cover the token cache/refresh, session
+    place of the M2 log-only loop. 29 new tests (`node:test`, 43 total in the suite) cover the token
+    cache/refresh, session
     handshake/retry (401/429/403, JSON and SSE response parsing) against a `node:http`-based mock TREK
     server, pure payload builders, and orchestration sequencing (single/multi-VEVENT folding,
     mid-sequence failure propagation, cancelled-event filtering) against a fake session. Deferred to M4

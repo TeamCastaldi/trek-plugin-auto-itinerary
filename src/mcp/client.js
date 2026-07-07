@@ -118,7 +118,11 @@ async function createSession(config) {
     }
     if (res.status === 429 && allowRateRetry) {
       const retryAfterHeader = res.headers.get('retry-after');
-      const delayMs = retryAfterHeader ? Number(retryAfterHeader) * 1000 : RATE_LIMIT_RETRY_DELAY_MS;
+      const retryAfterSeconds = Number(retryAfterHeader);
+      const delayMs =
+        retryAfterHeader && Number.isFinite(retryAfterSeconds)
+          ? retryAfterSeconds * 1000
+          : RATE_LIMIT_RETRY_DELAY_MS;
       await sleep(delayMs);
       return postWithRetry(body, { allowAuthRetry, allowRateRetry: false });
     }
@@ -151,6 +155,12 @@ async function createSession(config) {
   async function notify(method, params) {
     const res = await postWithRetry({ jsonrpc: '2.0', method, params });
     captureSessionId(res);
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`MCP ${method} failed: ${res.status} ${text.slice(0, 500)}`);
+    }
+    await res.text().catch(() => '');
   }
 
   async function listTools() {

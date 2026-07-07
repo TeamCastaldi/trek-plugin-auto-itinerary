@@ -223,3 +223,61 @@ test('a 403 on /mcp throws immediately with no retry', async () => {
     }
   );
 });
+
+test('a non-numeric retry-after header on 429 falls back to the default delay instead of skipping it', async () => {
+  let attempts = 0;
+  await withTokenServerStubbed(
+    (entry, res) => {
+      if (entry.body.method === 'initialize') {
+        sendJson(res, 200, { jsonrpc: '2.0', id: entry.body.id, result: {} }, { 'mcp-session-id': SESSION_ID });
+        return;
+      }
+      if (entry.body.method === 'notifications/initialized') {
+        res.writeHead(202).end();
+        return;
+      }
+      if (entry.body.method === 'tools/call') {
+        attempts += 1;
+        if (attempts === 1) {
+          // An HTTP-date-style retry-after value is valid per RFC 7231 but not a plain number.
+          res.writeHead(429, { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' }).end();
+          return;
+        }
+        sendJson(res, 200, { jsonrpc: '2.0', id: entry.body.id, result: { structuredContent: { ok: true } } });
+        return;
+      }
+      res.writeHead(500).end();
+    },
+    async (server) => {
+      const session = await createSession(baseConfig(server.url));
+      const start = Date.now();
+      const result = await session.callTool('create_trip', {});
+      const elapsedMs = Date.now() - start;
+
+      assert.deepEqual(result, { ok: true });
+      assert.equal(attempts, 2);
+      // Falls back to the ~1s default delay rather than Number(<date string>) = NaN (sleep(NaN)
+      // resolves immediately, which would silently skip the intended backoff).
+      assert.ok(elapsedMs >= 900, `expected the default retry delay to elapse, got ${elapsedMs}ms`);
+    }
+  );
+});
+
+test('notify() fails fast on a non-2xx response instead of masking the failure', async () => {
+  await withTokenServerStubbed(
+    (entry, res) => {
+      if (entry.body.method === 'initialize') {
+        sendJson(res, 200, { jsonrpc: '2.0', id: entry.body.id, result: {} }, { 'mcp-session-id': SESSION_ID });
+        return;
+      }
+      if (entry.body.method === 'notifications/initialized') {
+        res.writeHead(500).end('boom');
+        return;
+      }
+      res.writeHead(500).end();
+    },
+    async (server) => {
+      await assert.rejects(createSession(baseConfig(server.url)), /notifications\/initialized failed: 500/);
+    }
+  );
+});
