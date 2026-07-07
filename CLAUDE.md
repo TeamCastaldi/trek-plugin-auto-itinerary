@@ -203,7 +203,10 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     orchestrate test that reaches day resolution and a new test asserting the explicit
     date-not-found error (73 total tests). Renumbered the roadmap to make room: multi-account
     routing is now **M7**, packaging is **M8**, and the v1.1 unstructured-ingestion milestones are
-    now **M9–M12**. Two throwaway/broken trips from the live debugging session
-    (`travel.castaldifamily.com`, trip ids 3 and 4) need manual deletion in the app — there is no
-    `delete_trip` tool. A full non-dry-run `npm run e2e:mcp` against a real instance (flight/hotel/
-    generic fixtures) is still pending as final confirmation.
+    now **M9–M12**. **Confirmed live** (2026-07-07): a full non-dry-run `npm run e2e:mcp` against
+    `travel.castaldifamily.com` for all three remaining fixtures — `flight.ics` (trip 5,
+    `create_transport`), `hotel.ics` (trip 6, `create_accommodation`), `generic.ics` (trip 7,
+    `create_reservation`) — each completed end-to-end with **zero schema-guess mismatches** and
+    rendered correctly in the app. TODO M6 is fully closed. Five trips from this milestone's live
+    debugging (ids 3–7, two throwaway/broken plus three working confirmations) are safe to delete
+    manually from the app — there is no `delete_trip` tool.

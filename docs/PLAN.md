@@ -325,6 +325,14 @@ assumed, not confirmed, to follow `create_trip`'s `{ <entity>: {...} }` wrapping
 `extractEntity`/`extractId` helpers in `src/mcp/orchestrate.js` fall back to the old flat guess for
 resilience either way.
 
+**Full non-dry-run confirmation (2026-07-07):** `npm run e2e:mcp` against `travel.castaldifamily.com`
+for all three remaining fixtures — `flight.ics` (trip 5, `create_transport`), `hotel.ics` (trip 6,
+`create_accommodation`), `generic.ics` (trip 7, `create_reservation`) — each completed end-to-end
+with **"no schema-guess mismatches"** and rendered correctly in the app (verified visually: the hotel
+accommodation and dinner reservation both showed with correct dates/times). TODO M6 is fully closed.
+Two earlier throwaway/broken trips from mid-fix debugging (ids 3 and 4) plus these three real ones
+(5, 6, 7) are safe to delete manually from the app — there is no `delete_trip` tool.
+
 ---
 
 ## Assumptions & risks
