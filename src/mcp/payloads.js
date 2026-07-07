@@ -1,9 +1,12 @@
 /**
  * Pure builders that turn normalized `.ics` event data (from `src/parse.js`/`src/classify.js`)
- * into MCP `tools/call` argument objects. Every field name below is a guess based on
- * `docs/PLAN.md` §3's mapping table — the real `inputSchema`s are only knowable via a live
- * `tools/list` call (see docs/PLAN.md's R3). If a live instance disagrees, this is the only file
- * that should need to change; grep for `SCHEMA-GUESS` to find every assumption.
+ * into MCP `tools/call` argument objects. Every field name below is verified against a live TREK
+ * instance's `tools/list` `inputSchema`s (2026-07-07) — id casing is inconsistent per tool (not a
+ * single convention), so match each builder's fields literally rather than assuming a pattern.
+ * Deferred/out of scope: `create_transport`'s structured `endpoints` array (needs parsing a
+ * free-text `LOCATION` into named origin/destination points) and any `create_reservation` `type`
+ * finer than the `'other'` fallback (the classifier can't distinguish restaurant/event/tour/activity
+ * from a plain calendar invite).
  */
 
 function toDateOnly(date) {
@@ -14,6 +17,13 @@ function toDateOnly(date) {
 function toTimestamp(date, allDay) {
   if (!date) return undefined;
   return allDay ? toDateOnly(date) : date.toISOString();
+}
+
+/** `create_accommodation`/`create_reservation`'s check_in/check_out are "HH:MM" time-of-day
+ * strings, not timestamps — an all-day event has no time-of-day to report. */
+function toTimeOnly(date, allDay) {
+  if (!date || allDay) return undefined;
+  return date.toISOString().slice(11, 16);
 }
 
 /** Spans a message's non-cancelled events for the overall trip date range (create_trip dates). */
@@ -33,7 +43,6 @@ function transportTypeForClassification(type) {
   return 'other';
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — DTSTART/DTEND -> create_trip dates, SUMMARY -> create_trip.title.
 function buildCreateTripPayload({ title, startDate, endDate }) {
   return {
     title,
@@ -42,55 +51,68 @@ function buildCreateTripPayload({ title, startDate, endDate }) {
   };
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — LOCATION -> place (name), via create_and_assign_place.
-function buildCreatePlacePayload({ name, tripId, date, allDay }) {
+/** `create_and_assign_place`: tripId/dayId are camelCase; there is no raw-date field — place
+ * assignment is per-day (dayId), not per-timestamp. */
+function buildCreatePlacePayload({ name, tripId, dayId }) {
   return {
-    trip_id: tripId,
+    tripId,
+    dayId,
     name,
-    date: toTimestamp(date, allDay),
   };
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — hotel check-in/check-out -> create_accommodation.
-function buildCreateAccommodationPayload({ tripId, placeId, event }) {
+/** `create_accommodation`: tripId is camelCase; place_id/start_day_id/end_day_id are snake_case.
+ * There is no `title` field — the accommodation is described by its linked place. */
+function buildCreateAccommodationPayload({ tripId, placeId, startDayId, endDayId, event }) {
   return {
-    trip_id: tripId,
+    tripId,
     place_id: placeId,
-    title: event.summary,
-    check_in: toTimestamp(event.start, event.allDay),
-    check_out: toTimestamp(event.end, event.allDay),
+    start_day_id: startDayId,
+    end_day_id: endDayId,
+    check_in: toTimeOnly(event.start, event.allDay),
+    check_out: toTimeOnly(event.end, event.allDay),
     notes: event.description || undefined,
   };
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — flight/train -> create_transport(type).
-function buildCreateTransportPayload({ tripId, placeId, event, transportType }) {
+/** `create_transport`: tripId is camelCase; start_day_id/end_day_id are snake_case. There is no
+ * `place_id` field — location data belongs in the (currently unpopulated, see file header)
+ * `endpoints` array instead. `reservation_time`/`reservation_end_time` replace the guessed
+ * `departure_time`/`arrival_time`. */
+function buildCreateTransportPayload({ tripId, startDayId, endDayId, event, transportType }) {
   return {
-    trip_id: tripId,
-    place_id: placeId,
+    tripId,
     type: transportType,
     title: event.summary,
-    departure_time: toTimestamp(event.start, event.allDay),
-    arrival_time: toTimestamp(event.end, event.allDay),
+    start_day_id: startDayId,
+    end_day_id: endDayId,
+    reservation_time: toTimestamp(event.start, event.allDay),
+    reservation_end_time: toTimestamp(event.end, event.allDay),
     notes: event.description || undefined,
   };
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — generic fallback (restaurant/event/tour/meeting) -> create_reservation.
-function buildCreateReservationPayload({ tripId, placeId, event }) {
+/** `create_reservation`: tripId is camelCase; day_id is snake_case. `type` must be one of the
+ * verified enum values — this plugin's classifier can't distinguish finer than `'other'`.
+ * `place_id`/`start_day_id`/`end_day_id`/`check_in`/`check_out` are documented "hotel type only"
+ * (hotels go through create_accommodation instead), so the generic path uses the free-text
+ * `location` field rather than a place reference. */
+function buildCreateReservationPayload({ tripId, dayId, event }) {
   return {
-    trip_id: tripId,
-    place_id: placeId,
+    tripId,
     title: event.summary,
-    start_time: toTimestamp(event.start, event.allDay),
-    end_time: toTimestamp(event.end, event.allDay),
+    type: 'other',
+    day_id: dayId,
+    reservation_time: toTimestamp(event.start, event.allDay),
+    location: event.location || undefined,
     notes: event.description || undefined,
   };
 }
 
-// SCHEMA-GUESS: docs/PLAN.md §3 — auto_share -> create_share_link.
+/** `create_share_link`: tripId is camelCase. No other fields needed — the schema's
+ * share_map/share_bookings defaults (both true) already match the desired default behavior. */
 function buildCreateShareLinkPayload({ tripId }) {
-  return { trip_id: tripId };
+  return { tripId };
 }
 
 module.exports = {

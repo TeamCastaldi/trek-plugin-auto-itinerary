@@ -12,7 +12,10 @@
     "dev": "npm run build && npx trek-plugin-sdk dev",
     "validate": "npm run build && npx trek-plugin-sdk validate",
     "pack": "npm run build && npx trek-plugin-sdk pack",
-    "test": "node --test"
+    "test": "node --test",
+    "smoke": "node scripts/smoke-bundle.js",
+    "smoke:dev": "node scripts/smoke-dev.js",
+    "e2e:mcp": "node scripts/e2e-mcp.js"
   },
   "dependencies": {
     "imap-simple": "^5.1.0",

@@ -35,31 +35,36 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M5 — Verification harness
+### TODO M7 — Multi-account routing (per-recipient MCP credentials)
 
-`createMockHost` permission-scope tests (`PERMISSION_DENIED` / `RESOURCE_FORBIDDEN`), mock-MCP
-integration tests, `trek-plugin-sdk dev` + `dev-fixtures.json` run, real TREK docker E2E, bundle smoke
-test. See `docs/PLAN.md` §5.
+Route an invite to the correct family member's own TREK account/trip based on which address (`To`/
+`Cc`) it was actually sent to, instead of every trip landing under one fixed `mcp_client_id`. Design:
+a new secret settings field holding a JSON-encoded routing table (`{match, mcp_client_id,
+mcp_client_secret, mcp_scopes, auto_share}[]` — there's no native array/object settings type, so a
+single JSON-blob `password`-type field is the only option), matched case-insensitive substring
+against `src/imap.js`'s captured `To`/`Cc` headers (mirroring the existing `sender_allowlist`
+convention), first-match-wins, falling back unchanged to the base single-account settings when
+nothing matches (fully backward-compatible for single-account installs).
 
-### TODO M6 — Package, sign, publish
+### TODO M8 — Package, sign, publish
 
 `trek-plugin-sdk validate` + `pack`, `keygen`/`sign` (Ed25519), sideload to Admin → Plugins; optionally
 a `docs/screenshot.png` (note: `docs/` is excluded from the packed artifact, so this only matters for
 the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
 
-### TODO M7 (v1.1) — Modular Extraction & Router
+### TODO M9 (v1.1) — Modular Extraction & Router
 
 Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a new parsing router (`src/parse-router.js`) that iterates through a registry of isolated parser strategies (e.g., `ics`, `amex`, `concur`). The router will ask each strategy `canParse(emailPayload)`, and delegate to the first one that returns true.
 
-### TODO M8 (v1.1) — Parser Shards (`src/parsers/`)
+### TODO M10 (v1.1) — Parser Shards (`src/parsers/`)
 
 Move the existing `node-ical` logic into `src/parsers/ics.js`. Build `src/parsers/amex.js` to extract data from AMEX emails. *Crucial constraint:* Every parser shard must implement the exact same interface and output a normalized `VEVENT`-style object array (`summary`, `start`, `end`, `location`, `description`). This guarantees the downstream MCP orchestrator (`src/mcp/orchestrate.js`) remains completely agnostic to where the data came from.
 
-### TODO M9 (v1.1) — Ledger & Idempotency Pivot
+### TODO M11 (v1.1) — Ledger & Idempotency Pivot
 
 *(Same as previous)* Modify the `processed_invites` database schema. Since unstructured emails lack the standard iCalendar `UID` and `SEQUENCE` fields, implement a secondary deduplication strategy. Use a deterministic hash (e.g., `hash(PNR + StartDate)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates.
 
-### TODO M10 (v1.1) — Fixtures, Verification & Release
+### TODO M12 (v1.1) — Fixtures, Verification & Release
 
 Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tests for each isolated parser in `test/parsers/` to ensure their normalized output matches expectations. Update settings/manifest as needed. Bump version to `1.1.0`, validate, pack, and publish.
 
@@ -141,3 +146,67 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     would still fire the "changed content/sequence" warning. Dropped `sequence` from the hashed
     fields and added a regression test asserting hash stability across a sequence bump alone (65
     total tests).
+  - M5 — Verification harness: installed the real `trek-plugin-sdk@1.3.1` (previously never present
+    in `node_modules` in this checkout) and confirmed all 65 existing tests pass unmodified.
+    `test/permissions.test.js` (4 tests) uses the real `createMockHost` from `trek-plugin-sdk/testing`
+    to prove `onLoad` succeeds under `db:own`, an ungranted `ctx` call throws `PERMISSION_DENIED`, a
+    job-context trip read (no `actingUserId`) throws `RESOURCE_FORBIDDEN`, and — plugin-specific —
+    `processMessage` never calls any `ctx` surface outside `db:own`. `test/mcp-integration.test.js`
+    (1 test) closes the mock-server half of the "MCP integration" row by driving `processMessage`
+    with the real `createSession`/`buildTripForMessage` (not in-memory fakes) against an HTTP
+    `startMockTrekServer`, asserting a full trip build with a share link and an idempotent no-op
+    re-poll (70 total tests). `scripts/smoke-bundle.js` (`npm run smoke`) loads the esbuild output
+    from a scratch directory with only a stubbed `trek-plugin-sdk` present, proving the bundle has no
+    stray unbundled `require`s. `scripts/smoke-dev.js` (`npm run smoke:dev`) automates a real
+    `trek-plugin-sdk dev` run against a new root `dev-fixtures.json`. Corrected a PLAN.md assumption
+    along the way, source-verified against the installed SDK: `trek-plugin-sdk dev` never executes
+    `plugin.jobs` (only `onLoad` + `routes`), so the "Local run" verification row proves manifest/
+    permission loading, not job execution — see `docs/PLAN.md` §5. `scripts/e2e-mcp.js`
+    (`npm run e2e:mcp`) is the real-docker leg: env-var-gated like `scripts/smoke-imap.js`, confirmed
+    to skip cleanly with no credentials, but **not yet run against a live TREK instance** — no Docker
+    daemon was available in this environment; a runbook for running it is in `docs/PLAN.md` §5.
+  - Added `E2E_DRY_RUN` to `scripts/e2e-mcp.js`: prints the live `tools/list` `inputSchema` for every
+    tool a fixture would call, then stops before any `create_*` call — lets schemas be vetted
+    against every `SCHEMA-GUESS` in `src/mcp/payloads.js` without creating a real trip.
+  - **First live run against a real TREK instance** (2026-07-07) surfaced a real schema bug: the
+    initial run predated the `E2E_DRY_RUN` pull and created a live trip for real, whose error
+    response revealed `create_trip` returns `{ trip: { id, ... } }` (the full row nested under
+    `trip`), not the guessed bare `{ tripId }`. Fixed in `src/mcp/orchestrate.js` via new
+    `extractEntity`/`extractId` helpers that unwrap `{ <entity>: {...} }` first and fall back to the
+    old flat guess for resilience; added a regression test using the real captured response shape
+    (71 total tests). The other `create_*` tools' result shapes are still unconfirmed guesses,
+    updated to note they *assume* the same wrapping convention pending their own live verification.
+  - M6 — Fix real MCP payload schemas: a full live `tools/list` pass (`E2E_DRY_RUN`,
+    `E2E_SCHEMA_TOOLS`, and a new `E2E_INSPECT_DAYS=1` script mode that creates one throwaway trip
+    to observe `create_trip`'s auto-generated days and `get_trip_summary`'s response shape — neither
+    is visible from an `inputSchema` alone) resolved every remaining `SCHEMA-GUESS` in
+    `src/mcp/payloads.js`/`src/mcp/orchestrate.js`. Trips are made of `day` rows
+    (`{id, trip_id, day_number, date}`) auto-generated across `[start_date, end_date]`; every
+    sub-entity tool wants an integer `dayId`/`start_day_id`/`end_day_id`, not a raw date — added
+    `resolveDayMap` (`get_trip_summary` → `Map<date, dayId>`), called once per trip build (fresh or
+    resumed), with each event's date resolved before its `create_*` call (throws immediately if a
+    date falls outside the trip's own range — should never happen, but is now an explicit invariant
+    rather than a silently-`undefined` field). Id casing turned out to be **per-tool, not one
+    convention**: `create_and_assign_place`/`create_transport`/`create_share_link` want `tripId`/
+    `dayId` camelCase but snake_case `start_day_id`/`end_day_id`; `create_accommodation`/
+    `create_reservation` are snake_case throughout. Rewrote every builder in `src/mcp/payloads.js`
+    field-by-field against the verified schemas: dropped `create_transport`'s guessed `place_id`
+    (doesn't exist — location belongs in a structured `endpoints` array, deferred, not implemented),
+    renamed its `departure_time`/`arrival_time` to `reservation_time`/`reservation_end_time`;
+    `create_reservation` now sends the verified `type:'other'` (enum is
+    `hotel|restaurant|event|tour|activity|other`, and the classifier can't distinguish finer) plus a
+    `location` string instead of an unused place reference; `create_accommodation`'s `check_in`/
+    `check_out` are now `"HH:MM"` time-of-day strings (new `toTimeOnly` helper, `undefined` for
+    all-day events) instead of guessed full timestamps, and it no longer sends a nonexistent `title`
+    field. Updated `test/mcp-payloads.test.js`/`test/mcp-orchestrate.test.js`/
+    `test/mcp-integration.test.js` throughout, including a `get_trip_summary` mock in every
+    orchestrate test that reaches day resolution and a new test asserting the explicit
+    date-not-found error (73 total tests). Renumbered the roadmap to make room: multi-account
+    routing is now **M7**, packaging is **M8**, and the v1.1 unstructured-ingestion milestones are
+    now **M9–M12**. **Confirmed live** (2026-07-07): a full non-dry-run `npm run e2e:mcp` against
+    `travel.castaldifamily.com` for all three remaining fixtures — `flight.ics` (trip 5,
+    `create_transport`), `hotel.ics` (trip 6, `create_accommodation`), `generic.ics` (trip 7,
+    `create_reservation`) — each completed end-to-end with **zero schema-guess mismatches** and
+    rendered correctly in the app. TODO M6 is fully closed. Five trips from this milestone's live
+    debugging (ids 3–7, two throwaway/broken plus three working confirmations) are safe to delete
+    manually from the app — there is no `delete_trip` tool.

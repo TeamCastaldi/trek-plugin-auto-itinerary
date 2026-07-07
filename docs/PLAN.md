@@ -89,6 +89,30 @@ All run in plain forked Node child processes (not a VM sandbox).
   enumerate at runtime via MCP `tools/list` and read each tool's `inputSchema`.
 - Limits: 300 req/min/user, 20 concurrent sessions/user, 3600s idle TTL. Multi-replica needs sticky
   sessions (single self-hosted instance: N/A).
+- **Trip/day model, verified against a live instance (2026-07-07, M6):** `create_trip` auto-generates
+  one `day` row (`{id, trip_id, day_number, date}`) per calendar date across `[start_date, end_date]`.
+  There is **no `list_days` tool** — `get_trip_summary({tripId})` is the only way to read them back,
+  and its result is a **flat object** (`{ trip, members, days: [...], accommodations, reservations,
+  ... }` — `days` is a sibling of `trip`, not nested under it, unlike every `create_*` result). Every
+  sub-entity tool wants an integer **`dayId`** (or `start_day_id`/`end_day_id` for a date range), never
+  a raw date or timestamp — a message's events must be mapped to the resolved day ids before any
+  sub-entity `create_*` call (`src/mcp/orchestrate.js`'s `resolveDayMap`).
+- **Id casing is per-tool, not one convention** (verified field-by-field, not assumed): `create_trip`'s
+  own fields are snake_case (`start_date`/`end_date`); `create_and_assign_place` and
+  `create_transport`/`create_share_link` want `tripId`/`dayId` **camelCase** but then use snake_case
+  for `start_day_id`/`end_day_id`/`category_id`; `create_accommodation` and `create_reservation` use
+  snake_case (`place_id`/`day_id`/`start_day_id`/`end_day_id`) throughout. `create_transport` has
+  **no `place_id` field at all** — location data belongs in a structured `endpoints` array instead
+  (populating it from a free-text `LOCATION` is deferred — see below). `create_reservation`'s `type`
+  is one of `hotel|restaurant|event|tour|activity|other`; this plugin's classifier can't distinguish
+  finer than `'other'` from a plain calendar invite, and `place_id`/`start_day_id`/`end_day_id`/
+  `check_in`/`check_out` on that tool are documented "hotel type only" (hotels go through
+  `create_accommodation` instead), so the generic path uses the free-text `location` field.
+  `create_accommodation`'s `check_in`/`check_out` are short **`"HH:MM"` time-of-day strings**, not
+  timestamps (`undefined` for an all-day event — no time-of-day to report). All of the above is now
+  implemented in `src/mcp/payloads.js`/`src/mcp/orchestrate.js`; **deferred, not yet implemented:**
+  `create_transport`'s `endpoints` array (needs parsing free-text `LOCATION` into named
+  origin/destination points) and any `create_reservation` `type` finer than `'other'`.
 
 **Egress enforcement mechanism (source-verified, `server/src/nest/plugins/runtime/`):** the guard
 patches **`net.Socket.prototype.connect`** — the single TCP choke point that `node:http/https/net/tls`
@@ -149,7 +173,7 @@ three land as regular `dependencies` (not `devDependencies`), bundled into `serv
 Current skeleton in `src/index.js`: `jobs: [{ id: 'poll-inbox', schedule: '*/5 * * * *', handler }]`.
 Handler is wired up with parsing and MCP orchestration (completed in M2/M3).
 
-Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M7+):
+Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M9+):
 
 1. **IMAP**: connect (settings from `ctx.config`) → open `imap_folder` → search **UNSEEN** (+ optional
    sender allowlist) → fetch raw source of each message.
@@ -159,9 +183,11 @@ Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M7
 4. **Idempotency gate** (§4): skip if the `UID`(+`SEQUENCE`) is already in the `ctx.db` ledger.
 5. **Auth**: ensure a fresh `trekoa_` token (token manager: cache ~55 min, re-`POST /oauth/token`).
 6. **MCP session**: open Streamable HTTP session at `/mcp`; `tools/list` once to read live `inputSchema`s.
-7. **Build trip** (idempotently — see §4): `create_trip` → `create_and_assign_place`/`create_place` for
-   `LOCATION` → `create_accommodation` / `create_transport` / `create_reservation` per event type →
-   optional `create_share_link` if `auto_share`.
+7. **Build trip** (idempotently — see §4): `create_trip` → `get_trip_summary` to resolve each event's
+   date to its auto-generated `dayId` (see the trip/day model note above — required before any
+   sub-entity call) → `create_and_assign_place` for `LOCATION` → `create_accommodation` /
+   `create_transport` / `create_reservation` per event type → optional `create_share_link` if
+   `auto_share`.
 8. **Commit**: write ledger row (trip id, uid, sequence, share url), then mark mail `\Seen` (and/or a
    `$TrekProcessed` keyword / move to a processed folder). `ctx.log` throughout.
 
@@ -170,17 +196,17 @@ Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M7
 | `.ics` field | Maps to | Tool / field |
 
 |---|---|---|
-| `DTSTART` / `DTEND` | trip date range → auto-generated days; event times | `create_trip` dates; `create_transport` dep/arr times |
-| `SUMMARY` | trip title and/or reservation/event title | `create_trip.title`, `create_reservation.title` |
-| `LOCATION` | place (name → geocode/coords per tool schema) | `create_and_assign_place` / `create_place` |
-| `DESCRIPTION` | day notes / reservation notes / confirmation codes | day note or `create_*` notes/confirmation |
+| `DTSTART` / `DTEND` | trip date range → auto-generated days; event's resolved `dayId` | `create_trip` dates; `create_transport.start_day_id`/`end_day_id`, `create_accommodation.start_day_id`/`end_day_id`, `create_reservation.day_id` |
+| `SUMMARY` | trip title and/or reservation/event title | `create_trip.title`, `create_transport.title`, `create_reservation.title` |
+| `LOCATION` | place (name), assigned to the event's day; generic reservations use it as a plain string instead | `create_and_assign_place.name`; `create_reservation.location` |
+| `DESCRIPTION` | reservation/transport notes | `create_*.notes` |
 | `UID` (+ `SEQUENCE`) | idempotency key + update detection | ledger PK (§4) |
 | `METHOD:CANCEL` | cancellation | update/delete existing trip item |
 
 **Event-type classifier** (which tool to call) — keyword/heuristic on `SUMMARY`/`DESCRIPTION`/
 `CATEGORIES`/organizer domain: flight/airline/PNR → `create_transport(type:flight)`; train → transport;
 hotel/check-in/check-out → `create_accommodation`; otherwise a generic `create_reservation`.
-*Architectural constraint (M8):* All future unstructured parsers (AMEX, Concur) must output this exact
+*Architectural constraint (M10):* All future unstructured parsers (AMEX, Concur) must output this exact
 normalized `VEVENT` interface so the classifier and MCP payload builders remain completely untouched.
 
 ---
@@ -197,7 +223,7 @@ including safe handling of updates and partial failures.
   "every VEVENT's UID." `sequence` holds `max(sequence)` across the message's active events.
   Secondary guard: RFC822 `Message-Id` (`message_id` column). For v1.1 unstructured emails (AMEX,
   Concur), this pivots to a deterministic hash (e.g. `hash(PNR + StartDate + Destination)`) or the
-  RFC822 `Message-Id` directly, since those senders lack `UID`/`SEQUENCE` (M9).
+  RFC822 `Message-Id` directly, since those senders lack `UID`/`SEQUENCE` (M11).
 - **Ledger in `ctx.db`** (own SQLite, `db:own`) — schema migrated in `src/index.js`:
   `processed_invites(uid TEXT PRIMARY KEY, message_id TEXT, sequence INT, trip_id TEXT, share_url TEXT,
   status TEXT, payload_hash TEXT, created_at, updated_at)`. `status ∈ {in_progress, done, cancelled,
@@ -234,10 +260,78 @@ including safe handling of updates and partial failures.
 | **Parser (pure)** | fixture `.ics` files → `node-ical` → mapper | correct trip/transport/reservation JSON per the mapping table; handles all-day, TZ, multi-VEVENT, CANCEL |
 | **Email extract** | raw RFC822 fixtures → `mailparser` | `text/calendar` part found (attachment + inline) |
 | **Idempotency** | run the pipeline twice over the same fixture | exactly one trip; second run is a no-op; `SEQUENCE` bump updates |
-| **Local run** | `trek-plugin-sdk dev --port 4317` + `dev-fixtures.json` (trips/users/config) | job executes, `db:own` persists ledger, hot reload |
+| **Local run** | `trek-plugin-sdk dev --port 4317` + `dev-fixtures.json` (trips/users/config) | manifest/permissions load and `onLoad`'s `db:own` migrate succeeds under the real SDK, hot reload works — **not** job execution (see M5 correction below) |
 | **MCP integration** | mock local HTTP server for `POST /oauth/token` + `/mcp` (`tools/list`, `create_*`); then a real local TREK docker with a machine client | token exchange, session, tool calls, share link |
 | **Packaging** | `trek-plugin-sdk validate` → `pack` | manifest/layout valid; no `node_modules`/native; within size limits |
 | **Live IMAP smoke test** | `scripts/smoke-imap.js` | passed in M2 against Gmail/Workspace, empirically confirming R1 |
+| **Bundle smoke test** | `scripts/smoke-bundle.js` (`npm run smoke`) | esbuild output loads with zero `node_modules` besides a stubbed `trek-plugin-sdk`; `onLoad`/`jobs[0]=poll-inbox` present |
+
+**M5 correction (source-verified against the real installed `trek-plugin-sdk@1.3.1`, not assumed):**
+`trek-plugin-sdk dev`'s implementation (`dist/cli/dev.js`) only calls the plugin's `onLoad(ctx)` and
+serves `plugin.routes` over HTTP — it never invokes `plugin.jobs`. So the "Local run" row's "job
+executes" claim doesn't hold for `dev` specifically; job-execution correctness is proven by the
+`processMessage` unit/integration tests instead (`test/index.test.js`, `test/mcp-integration.test.js`).
+`scripts/smoke-dev.js` (`npm run smoke:dev`) automates the corrected scope of this row: it spawns
+`trek-plugin-sdk dev` against the built plugin + a (deliberately empty, since this plugin never reads
+`ctx.trips`/`ctx.users`) root `dev-fixtures.json`, and asserts the dashboard responds without a
+"plugin failed to load" error.
+
+`createMockHost` (from `trek-plugin-sdk/testing`) matches the shape described above exactly:
+`{ grants, config, trips, users, queryResults, actingUserId, budgetAddonEnabled, pluginExports }` →
+`{ ctx, calls, logs, broadcasts, emitted }`. An ungranted call throws `PermissionDenied` (message
+`PERMISSION_DENIED: <method> requires <perm>`); any user-scoped call (`ctx.trips.*` etc.) throws
+`RESOURCE_FORBIDDEN: this call requires an authenticated user context` whenever no `actingUserId`
+is configured — the exact mechanism for modeling a job/`onLoad` context in a unit test.
+`test/permissions.test.js` covers all three assertions in the table's first row, plus a
+plugin-specific check that `processMessage` never calls any `ctx` surface outside `db:own`.
+
+`test/mcp-integration.test.js` closes the mock-server half of the "MCP integration" row: it drives
+`processMessage` with the *real* `createSession`/`buildTripForMessage` (not the in-memory fakes used
+by `test/mcp-orchestrate.test.js`) against an HTTP `startMockTrekServer` implementing a minimal
+`initialize`/`tools/list`/`tools/call` JSON-RPC router, asserting a full trip build (with share link)
+on the first run and zero new `/mcp` traffic on an idempotent re-poll.
+
+The real-docker half of "MCP integration" — `scripts/e2e-mcp.js` (`npm run e2e:mcp`) — is
+env-var-gated (`E2E_TREK_BASE_URL`/`E2E_MCP_CLIENT_ID`/`E2E_MCP_CLIENT_SECRET`) exactly like
+`scripts/smoke-imap.js`, and skips cleanly without them. **Written but not yet run against a live
+instance** (no Docker daemon was available in the M5 development environment) — running it once
+against a real TREK instance is what would finally resolve every `SCHEMA-GUESS` in
+`src/mcp/payloads.js` (the script prints any live `tools/list` schema mismatches it finds). To run it:
+
+```bash
+ENCRYPTION_KEY=$(openssl rand -hex 32) docker run -d -p 3000:3000 \
+  -e ENCRYPTION_KEY=$ENCRYPTION_KEY -e APP_URL=http://localhost:3000 \
+  -v ./data:/app/data -v ./uploads:/app/uploads mauriceboe/trek
+```
+
+then, once logged in: Settings → Integrations → MCP → OAuth Clients → "Machine client (no browser
+login)" to mint a `client_credentials` pair scoped `trips:write places:write reservations:write
+trips:share`, and export `E2E_TREK_BASE_URL=http://localhost:3000`, `E2E_MCP_CLIENT_ID`,
+`E2E_MCP_CLIENT_SECRET` before running `npm run e2e:mcp`.
+
+**Live run results (2026-07-07, against a real family TREK instance) — TODO M6:** the first live
+call to `create_trip` surfaced that it returns `{ trip: { id, user_id, title, start_date, end_date,
+currency, ... } }` — the full created row nested under the entity's singular name — not the bare
+`{ tripId }` originally guessed. That, plus a full `E2E_DRY_RUN=1`/`E2E_SCHEMA_TOOLS`/
+`E2E_INSPECT_DAYS=1` pass across every `create_*` tool's live `inputSchema` (and one throwaway
+`create_trip` + `get_trip_summary` call to observe response shapes `tools/list` can't describe),
+resolved every remaining `SCHEMA-GUESS` in `src/mcp/payloads.js`/`src/mcp/orchestrate.js` — see the
+"Trip/day model" and "Id casing is per-tool" notes earlier in this section for the full verified
+details (day resolution via `get_trip_summary`, per-tool camelCase/snake_case id fields, dropped
+`place_id` on `create_transport`, `create_reservation`'s `'other'`-only `type`,
+`create_accommodation`'s `"HH:MM"` check-in/out strings). `create_and_assign_place`'s and
+`create_share_link`'s **result** shapes (as opposed to their now-verified input schemas) are still
+assumed, not confirmed, to follow `create_trip`'s `{ <entity>: {...} }` wrapping convention — the
+`extractEntity`/`extractId` helpers in `src/mcp/orchestrate.js` fall back to the old flat guess for
+resilience either way.
+
+**Full non-dry-run confirmation (2026-07-07):** `npm run e2e:mcp` against `travel.castaldifamily.com`
+for all three remaining fixtures — `flight.ics` (trip 5, `create_transport`), `hotel.ics` (trip 6,
+`create_accommodation`), `generic.ics` (trip 7, `create_reservation`) — each completed end-to-end
+with **"no schema-guess mismatches"** and rendered correctly in the app (verified visually: the hotel
+accommodation and dinner reservation both showed with correct dates/times). TODO M6 is fully closed.
+Two earlier throwaway/broken trips from mid-fix debugging (ids 3 and 4) plus these three real ones
+(5, 6, 7) are safe to delete manually from the app — there is no `delete_trip` tool.
 
 ---
 
@@ -273,7 +367,7 @@ including safe handling of updates and partial failures.
 
 *Post-v1.0 architectural plan to support non-standard travel emails without breaking the `.ics` core.*
 
-- **M7: Modular Extraction & Router:** Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a parsing router (`src/parse-router.js`) that queries a registry of isolated parser strategies (`canParse(emailPayload)`) and delegates accordingly.
-- **M8: Parser Shards (`src/parsers/`):** Move `node-ical` logic into `src/parsers/ics.js`. Build `src/parsers/amex.js`. Every parser shard must output a normalized `VEVENT`-style object array (`summary`, `start`, `end`, `location`, `description`) to keep the downstream MCP orchestrator format-agnostic.
-- **M9: Ledger & Idempotency Pivot:** Expand `processed_invites` schema/logic. Use a deterministic hash (`hash(PNR + StartDate)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates and block duplicates.
-- **M10: Fixtures, Verification & Release:** Add `.eml` fixtures for the new shards. Write isolated unit tests in `test/parsers/`. Update manifest/settings, bump to `1.1.0`, validate, pack, and publish.
+- **M9: Modular Extraction & Router:** Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a parsing router (`src/parse-router.js`) that queries a registry of isolated parser strategies (`canParse(emailPayload)`) and delegates accordingly.
+- **M10: Parser Shards (`src/parsers/`):** Move `node-ical` logic into `src/parsers/ics.js`. Build `src/parsers/amex.js`. Every parser shard must output a normalized `VEVENT`-style object array (`summary`, `start`, `end`, `location`, `description`) to keep the downstream MCP orchestrator format-agnostic.
+- **M11: Ledger & Idempotency Pivot:** Expand `processed_invites` schema/logic. Use a deterministic hash (`hash(PNR + StartDate)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates and block duplicates.
+- **M12: Fixtures, Verification & Release:** Add `.eml` fixtures for the new shards. Write isolated unit tests in `test/parsers/`. Update manifest/settings, bump to `1.1.0`, validate, pack, and publish.

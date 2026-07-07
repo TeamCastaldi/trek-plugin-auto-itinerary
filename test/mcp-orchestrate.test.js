@@ -11,6 +11,12 @@ const loadClassifiedEvents = (name) => {
   return parseEvents(ics).map((event) => classifyEvent(event));
 };
 
+/** Builds a fake get_trip_summary result: `days` is a flat sibling of `trip`, per the real
+ * live shape — pairs are [date, dayId]. */
+function daysResult(...pairs) {
+  return { days: pairs.map(([date, id]) => ({ id, date })) };
+}
+
 function fakeSession({ toolsMap = new Map(), results = {}, onCall } = {}) {
   const calls = [];
   return {
@@ -37,6 +43,7 @@ test('builds one trip with one transport entry for a single-VEVENT flight invite
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(['2026-08-01', 100]),
       create_and_assign_place: { placeId: 'place_1' },
       create_transport: {},
     },
@@ -49,10 +56,13 @@ test('builds one trip with one transport entry for a single-VEVENT flight invite
   assert.equal(result.shareUrl, null);
   assert.deepEqual(
     session.calls.map((c) => c.name),
-    ['create_trip', 'create_and_assign_place', 'create_transport']
+    ['create_trip', 'get_trip_summary', 'create_and_assign_place', 'create_transport']
   );
-  assert.equal(session.calls[2].args.type, 'flight');
-  assert.equal(session.calls[2].args.place_id, 'place_1');
+  const transportCall = session.calls.find((c) => c.name === 'create_transport');
+  assert.equal(transportCall.args.type, 'flight');
+  assert.equal(transportCall.args.tripId, 'trip_1');
+  assert.equal(transportCall.args.start_day_id, 100);
+  assert.equal(transportCall.args.place_id, undefined);
 });
 
 test('folds a multi-VEVENT message into exactly one trip, sharing the trip id across sub-calls', async () => {
@@ -60,6 +70,12 @@ test('folds a multi-VEVENT message into exactly one trip, sharing the trip id ac
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_multi' },
+      get_trip_summary: daysResult(
+        ['2026-08-05', 1],
+        ['2026-08-06', 2],
+        ['2026-08-07', 3],
+        ['2026-08-08', 4]
+      ),
       create_and_assign_place: { placeId: 'place_x' },
       create_transport: {},
       create_accommodation: {},
@@ -74,8 +90,12 @@ test('folds a multi-VEVENT message into exactly one trip, sharing the trip id ac
 
   const transportCall = session.calls.find((c) => c.name === 'create_transport');
   const accommodationCall = session.calls.find((c) => c.name === 'create_accommodation');
-  assert.equal(transportCall.args.trip_id, 'trip_multi');
-  assert.equal(accommodationCall.args.trip_id, 'trip_multi');
+  assert.equal(transportCall.args.tripId, 'trip_multi');
+  assert.equal(transportCall.args.start_day_id, 1);
+  assert.equal(accommodationCall.args.tripId, 'trip_multi');
+  // The hotel VEVENT spans the all-day range 2026-08-05..2026-08-08 (DTEND exclusive).
+  assert.equal(accommodationCall.args.start_day_id, 1);
+  assert.equal(accommodationCall.args.end_day_id, 4);
 });
 
 test('calls create_share_link when auto_share is yes', async () => {
@@ -83,6 +103,7 @@ test('calls create_share_link when auto_share is yes', async () => {
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(['2026-08-02', 1]),
       create_and_assign_place: { placeId: 'place_1' },
       create_transport: {},
       create_share_link: { url: 'https://trek.example.com/share/abc' },
@@ -100,6 +121,7 @@ test('does not call create_share_link when auto_share is not yes', async () => {
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(['2026-08-01', 1]),
       create_reservation: {},
     },
   });
@@ -115,6 +137,12 @@ test('a mid-sequence failure throws and does not silently continue', async () =>
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(
+        ['2026-08-05', 1],
+        ['2026-08-06', 2],
+        ['2026-08-07', 3],
+        ['2026-08-08', 4]
+      ),
       create_and_assign_place: { placeId: 'place_1' },
       create_transport: {},
       create_accommodation: 'reject',
@@ -139,7 +167,11 @@ test('logs a schema-check warning (not a hard failure) when a guessed field is m
   ]);
   const session = fakeSession({
     toolsMap,
-    results: { create_trip: { tripId: 'trip_1' }, create_reservation: {} },
+    results: {
+      create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(['2026-08-01', 1]),
+      create_reservation: {},
+    },
   });
 
   const result = await buildTripForMessage(session, { uid: 6 }, classifiedEvents, {});
@@ -163,6 +195,21 @@ test('throws a descriptive error if create_trip does not return a usable trip id
   assert.ok(!session.calls.some((c) => c.name === 'create_reservation'));
 });
 
+test('throws a descriptive error when an event date has no matching resolved day', async () => {
+  const classifiedEvents = loadClassifiedEvents('generic.ics'); // 2026-08-01
+  const session = fakeSession({
+    results: {
+      create_trip: { tripId: 'trip_1' },
+      get_trip_summary: daysResult(['2099-01-01', 1]), // deliberately wrong date
+    },
+  });
+
+  await assert.rejects(
+    buildTripForMessage(session, { uid: 12 }, classifiedEvents, {}),
+    /no day found on trip trip_1 for date 2026-08-01/
+  );
+});
+
 test('buildTripForMessage filters cancelled events itself, even if the caller forgot to pre-filter', async () => {
   const classifiedEvents = loadClassifiedEvents('cancel.ics');
   const session = fakeSession({ results: { create_trip: { tripId: 'trip_1' } } });
@@ -178,6 +225,7 @@ test('an existingTripId skips create_trip and reuses the id for sub-entity calls
   const classifiedEvents = loadClassifiedEvents('flight.ics');
   const session = fakeSession({
     results: {
+      get_trip_summary: daysResult(['2026-08-01', 1]),
       create_and_assign_place: { placeId: 'place_1' },
       create_transport: {},
     },
@@ -193,7 +241,44 @@ test('an existingTripId skips create_trip and reuses the id for sub-entity calls
 
   assert.equal(result.tripId, 'trip_resumed');
   assert.ok(!session.calls.some((c) => c.name === 'create_trip'));
-  assert.equal(session.calls[0].args.trip_id, 'trip_resumed');
+  assert.ok(session.calls.some((c) => c.name === 'get_trip_summary'));
+  const transportCall = session.calls.find((c) => c.name === 'create_transport');
+  assert.equal(transportCall.args.tripId, 'trip_resumed');
+});
+
+test('extracts the trip id and place id from the real live { <entity>: { id, ... } } response shape', async () => {
+  // Captured from a live TREK instance (2026-07-07): create_trip nests the full created row
+  // under `trip`, not a bare `{ tripId }` as originally guessed; place/share_link are assumed
+  // (not yet verified) to follow the same convention.
+  const classifiedEvents = loadClassifiedEvents('hotel.ics');
+  const session = fakeSession({
+    results: {
+      create_trip: {
+        trip: {
+          id: 3,
+          user_id: 2,
+          title: 'Flight UA123 to SFO',
+          start_date: '2026-08-01',
+          end_date: '2026-08-03',
+          currency: 'EUR',
+          is_owner: 1,
+          owner_username: 'Nathan',
+        },
+      },
+      get_trip_summary: daysResult(['2026-08-01', 10], ['2026-08-02', 11], ['2026-08-03', 12]),
+      create_and_assign_place: { place: { id: 7 } },
+      create_accommodation: {},
+    },
+  });
+
+  const result = await buildTripForMessage(session, { uid: 11 }, classifiedEvents, {});
+
+  assert.equal(result.tripId, 3);
+  const accommodationCall = session.calls.find((c) => c.name === 'create_accommodation');
+  assert.equal(accommodationCall.args.tripId, 3);
+  assert.equal(accommodationCall.args.place_id, 7);
+  assert.equal(accommodationCall.args.start_day_id, 10);
+  assert.equal(accommodationCall.args.end_day_id, 12);
 });
 
 test('onTripCreated fires exactly once, right after a fresh create_trip succeeds', async () => {
@@ -201,6 +286,7 @@ test('onTripCreated fires exactly once, right after a fresh create_trip succeeds
   const session = fakeSession({
     results: {
       create_trip: { tripId: 'trip_fresh' },
+      get_trip_summary: daysResult(['2026-08-01', 1]),
       create_and_assign_place: { placeId: 'place_1' },
       create_transport: {},
     },
