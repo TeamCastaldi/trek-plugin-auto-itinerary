@@ -3,3 +3,4 @@ server/
 plugin.zip
 npm-debug.log*
 /trek-plugin.json
+/.trek-dev/

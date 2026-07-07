@@ -1,0 +1,6 @@
+{
+  "_comment": "This plugin never reads ctx.trips/ctx.users (all trip mutation goes through the MCP server, not ctx — see docs/PLAN.md §3), so there is intentionally no trip/user seed data here. This file only exists so `trek-plugin-sdk dev` has something to load; config seeds nothing beyond the manifest's own settings.",
+  "trips": {},
+  "users": {},
+  "config": {}
+}

@@ -35,12 +35,6 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M5 — Verification harness
-
-`createMockHost` permission-scope tests (`PERMISSION_DENIED` / `RESOURCE_FORBIDDEN`), mock-MCP
-integration tests, `trek-plugin-sdk dev` + `dev-fixtures.json` run, real TREK docker E2E, bundle smoke
-test. See `docs/PLAN.md` §5.
-
 ### TODO M6 — Package, sign, publish
 
 `trek-plugin-sdk validate` + `pack`, `keygen`/`sign` (Ed25519), sideload to Admin → Plugins; optionally
@@ -141,3 +135,22 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     would still fire the "changed content/sequence" warning. Dropped `sequence` from the hashed
     fields and added a regression test asserting hash stability across a sequence bump alone (65
     total tests).
+  - M5 — Verification harness: installed the real `trek-plugin-sdk@1.3.1` (previously never present
+    in `node_modules` in this checkout) and confirmed all 65 existing tests pass unmodified.
+    `test/permissions.test.js` (4 tests) uses the real `createMockHost` from `trek-plugin-sdk/testing`
+    to prove `onLoad` succeeds under `db:own`, an ungranted `ctx` call throws `PERMISSION_DENIED`, a
+    job-context trip read (no `actingUserId`) throws `RESOURCE_FORBIDDEN`, and — plugin-specific —
+    `processMessage` never calls any `ctx` surface outside `db:own`. `test/mcp-integration.test.js`
+    (1 test) closes the mock-server half of the "MCP integration" row by driving `processMessage`
+    with the real `createSession`/`buildTripForMessage` (not in-memory fakes) against an HTTP
+    `startMockTrekServer`, asserting a full trip build with a share link and an idempotent no-op
+    re-poll (70 total tests). `scripts/smoke-bundle.js` (`npm run smoke`) loads the esbuild output
+    from a scratch directory with only a stubbed `trek-plugin-sdk` present, proving the bundle has no
+    stray unbundled `require`s. `scripts/smoke-dev.js` (`npm run smoke:dev`) automates a real
+    `trek-plugin-sdk dev` run against a new root `dev-fixtures.json`. Corrected a PLAN.md assumption
+    along the way, source-verified against the installed SDK: `trek-plugin-sdk dev` never executes
+    `plugin.jobs` (only `onLoad` + `routes`), so the "Local run" verification row proves manifest/
+    permission loading, not job execution — see `docs/PLAN.md` §5. `scripts/e2e-mcp.js`
+    (`npm run e2e:mcp`) is the real-docker leg: env-var-gated like `scripts/smoke-imap.js`, confirmed
+    to skip cleanly with no credentials, but **not yet run against a live TREK instance** — no Docker
+    daemon was available in this environment; a runbook for running it is in `docs/PLAN.md` §5.

@@ -234,10 +234,54 @@ including safe handling of updates and partial failures.
 | **Parser (pure)** | fixture `.ics` files → `node-ical` → mapper | correct trip/transport/reservation JSON per the mapping table; handles all-day, TZ, multi-VEVENT, CANCEL |
 | **Email extract** | raw RFC822 fixtures → `mailparser` | `text/calendar` part found (attachment + inline) |
 | **Idempotency** | run the pipeline twice over the same fixture | exactly one trip; second run is a no-op; `SEQUENCE` bump updates |
-| **Local run** | `trek-plugin-sdk dev --port 4317` + `dev-fixtures.json` (trips/users/config) | job executes, `db:own` persists ledger, hot reload |
+| **Local run** | `trek-plugin-sdk dev --port 4317` + `dev-fixtures.json` (trips/users/config) | manifest/permissions load and `onLoad`'s `db:own` migrate succeeds under the real SDK, hot reload works — **not** job execution (see M5 correction below) |
 | **MCP integration** | mock local HTTP server for `POST /oauth/token` + `/mcp` (`tools/list`, `create_*`); then a real local TREK docker with a machine client | token exchange, session, tool calls, share link |
 | **Packaging** | `trek-plugin-sdk validate` → `pack` | manifest/layout valid; no `node_modules`/native; within size limits |
 | **Live IMAP smoke test** | `scripts/smoke-imap.js` | passed in M2 against Gmail/Workspace, empirically confirming R1 |
+| **Bundle smoke test** | `scripts/smoke-bundle.js` (`npm run smoke`) | esbuild output loads with zero `node_modules` besides a stubbed `trek-plugin-sdk`; `onLoad`/`jobs[0]=poll-inbox` present |
+
+**M5 correction (source-verified against the real installed `trek-plugin-sdk@1.3.1`, not assumed):**
+`trek-plugin-sdk dev`'s implementation (`dist/cli/dev.js`) only calls the plugin's `onLoad(ctx)` and
+serves `plugin.routes` over HTTP — it never invokes `plugin.jobs`. So the "Local run" row's "job
+executes" claim doesn't hold for `dev` specifically; job-execution correctness is proven by the
+`processMessage` unit/integration tests instead (`test/index.test.js`, `test/mcp-integration.test.js`).
+`scripts/smoke-dev.js` (`npm run smoke:dev`) automates the corrected scope of this row: it spawns
+`trek-plugin-sdk dev` against the built plugin + a (deliberately empty, since this plugin never reads
+`ctx.trips`/`ctx.users`) root `dev-fixtures.json`, and asserts the dashboard responds without a
+"plugin failed to load" error.
+
+`createMockHost` (from `trek-plugin-sdk/testing`) matches the shape described above exactly:
+`{ grants, config, trips, users, queryResults, actingUserId, budgetAddonEnabled, pluginExports }` →
+`{ ctx, calls, logs, broadcasts, emitted }`. An ungranted call throws `PermissionDenied` (message
+`PERMISSION_DENIED: <method> requires <perm>`); any user-scoped call (`ctx.trips.*` etc.) throws
+`RESOURCE_FORBIDDEN: this call requires an authenticated user context` whenever no `actingUserId`
+is configured — the exact mechanism for modeling a job/`onLoad` context in a unit test.
+`test/permissions.test.js` covers all three assertions in the table's first row, plus a
+plugin-specific check that `processMessage` never calls any `ctx` surface outside `db:own`.
+
+`test/mcp-integration.test.js` closes the mock-server half of the "MCP integration" row: it drives
+`processMessage` with the *real* `createSession`/`buildTripForMessage` (not the in-memory fakes used
+by `test/mcp-orchestrate.test.js`) against an HTTP `startMockTrekServer` implementing a minimal
+`initialize`/`tools/list`/`tools/call` JSON-RPC router, asserting a full trip build (with share link)
+on the first run and zero new `/mcp` traffic on an idempotent re-poll.
+
+The real-docker half of "MCP integration" — `scripts/e2e-mcp.js` (`npm run e2e:mcp`) — is
+env-var-gated (`E2E_TREK_BASE_URL`/`E2E_MCP_CLIENT_ID`/`E2E_MCP_CLIENT_SECRET`) exactly like
+`scripts/smoke-imap.js`, and skips cleanly without them. **Written but not yet run against a live
+instance** (no Docker daemon was available in the M5 development environment) — running it once
+against a real TREK instance is what would finally resolve every `SCHEMA-GUESS` in
+`src/mcp/payloads.js` (the script prints any live `tools/list` schema mismatches it finds). To run it:
+
+```bash
+ENCRYPTION_KEY=$(openssl rand -hex 32) docker run -d -p 3000:3000 \
+  -e ENCRYPTION_KEY=$ENCRYPTION_KEY -e APP_URL=http://localhost:3000 \
+  -v ./data:/app/data -v ./uploads:/app/uploads mauriceboe/trek
+```
+
+then, once logged in: Settings → Integrations → MCP → OAuth Clients → "Machine client (no browser
+login)" to mint a `client_credentials` pair scoped `trips:write places:write reservations:write
+trips:share`, and export `E2E_TREK_BASE_URL=http://localhost:3000`, `E2E_MCP_CLIENT_ID`,
+`E2E_MCP_CLIENT_SECRET` before running `npm run e2e:mcp`.
 
 ---
 
