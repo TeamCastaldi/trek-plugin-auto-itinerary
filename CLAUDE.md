@@ -35,15 +35,39 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
+### TODO M4 — Idempotency & state ledger
+
+Wire the `processed_invites` ledger (schema already migrated in `src/index.js`) into real use:
+two-phase write (`in_progress` → `done`), `SEQUENCE`-based update detection, `CANCEL` handling,
+mail-flag second guard (`\Seen` / processed folder). See `docs/PLAN.md` §4.
+
 ### TODO M5 — Verification harness
+
 `createMockHost` permission-scope tests (`PERMISSION_DENIED` / `RESOURCE_FORBIDDEN`), mock-MCP
 integration tests, `trek-plugin-sdk dev` + `dev-fixtures.json` run, real TREK docker E2E, bundle smoke
 test. See `docs/PLAN.md` §5.
 
 ### TODO M6 — Package, sign, publish
+
 `trek-plugin-sdk validate` + `pack`, `keygen`/`sign` (Ed25519), sideload to Admin → Plugins; optionally
 a `docs/screenshot.png` (note: `docs/` is excluded from the packed artifact, so this only matters for
 the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
+
+### TODO M7 (v1.1) — Modular Extraction & Router
+
+Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a new parsing router (`src/parse-router.js`) that iterates through a registry of isolated parser strategies (e.g., `ics`, `amex`, `concur`). The router will ask each strategy `canParse(emailPayload)`, and delegate to the first one that returns true.
+
+### TODO M8 (v1.1) — Parser Shards (`src/parsers/`)
+
+Move the existing `node-ical` logic into `src/parsers/ics.js`. Build `src/parsers/amex.js` to extract data from AMEX emails. *Crucial constraint:* Every parser shard must implement the exact same interface and output a normalized `VEVENT`-style object array (`summary`, `start`, `end`, `location`, `description`). This guarantees the downstream MCP orchestrator (`src/mcp/orchestrate.js`) remains completely agnostic to where the data came from.
+
+### TODO M9 (v1.1) — Ledger & Idempotency Pivot
+
+*(Same as previous)* Modify the `processed_invites` database schema. Since unstructured emails lack the standard iCalendar `UID` and `SEQUENCE` fields, implement a secondary deduplication strategy. Use a deterministic hash (e.g., `hash(PNR + StartDate)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates.
+
+### TODO M10 (v1.1) — Fixtures, Verification & Release
+
+Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tests for each isolated parser in `test/parsers/` to ensure their normalized output matches expectations. Update settings/manifest as needed. Bump version to `1.1.0`, validate, pack, and publish.
 
 ## Version history
 
@@ -57,7 +81,7 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     (`processed_invites` ledger migration, stubbed `poll-inbox` job), esbuild build pipeline. Validates
     clean; bundle smoke-tested. (PR #1)
   - Addressed Copilot PR review: clarified README ledger-status wording, declared `engines.node
-    >=20.12.0` in `package.json` (matches `@clack/core`'s transitive requirement via `trek-plugin-sdk`).
+    >=20.12.0` in `package.json` (matches `@clack/core`'s transitive requirement via`trek-plugin-sdk`).
   - M2 — Ingestion + `.ics` parsing: real `imap-simple` connect (`src/imap.js`) → `mailparser`
     calendar-part extraction (`src/extract.js`) → `node-ical` VEVENT normalization (`src/parse.js`,
     including all-day/TZ/multi-VEVENT/CANCEL handling) → keyword classifier (`src/classify.js`), wired
