@@ -16,7 +16,17 @@ const { classifyEvent } = require('../src/classify');
  * Skips cleanly (same pattern as scripts/smoke-imap.js) unless E2E_TREK_BASE_URL/
  * E2E_MCP_CLIENT_ID/E2E_MCP_CLIENT_SECRET are set. See docs/PLAN.md §5 for the docker run + machine
  * client setup steps to get those values.
+ *
+ * Set E2E_DRY_RUN=1 to only fetch and print the live `inputSchema`s for the tools this fixture
+ * would call, without calling any create_* tool — useful for eyeballing every SCHEMA-GUESS in
+ * src/mcp/payloads.js against a real instance before creating anything.
  */
+function toolNameForType(type) {
+  if (type === 'flight' || type === 'train') return 'create_transport';
+  if (type === 'hotel') return 'create_accommodation';
+  return 'create_reservation';
+}
+
 async function main() {
   const required = ['E2E_TREK_BASE_URL', 'E2E_MCP_CLIENT_ID', 'E2E_MCP_CLIENT_SECRET'];
   const missing = required.filter((key) => !process.env[key]);
@@ -45,7 +55,35 @@ async function main() {
 
   console.log(`[e2e-mcp] connecting to ${config.trek_base_url}...`);
   const session = await createSession(config);
-  console.log('[e2e-mcp] MCP session established, building trip from', fixtureName);
+  console.log(`[e2e-mcp] MCP session established (fixture: ${fixtureName})`);
+
+  const toolsMap = await session.listTools();
+  console.log(`[e2e-mcp] live tools/list returned ${toolsMap.size} tool(s)`);
+
+  const relevantToolNames = new Set(['create_trip', 'create_and_assign_place']);
+  for (const { type } of activeEvents) relevantToolNames.add(toolNameForType(type));
+  if (config.auto_share === 'yes') relevantToolNames.add('create_share_link');
+
+  console.log('[e2e-mcp] live inputSchema for the tool(s) this fixture will call:');
+  for (const name of relevantToolNames) {
+    const schema = toolsMap.get(name);
+    if (!schema) {
+      console.warn(`  - ${name}: NOT FOUND in tools/list (scope missing, or the tool doesn't exist on this instance)`);
+      continue;
+    }
+    console.log(`  - ${name}:`);
+    console.log(
+      JSON.stringify(schema, null, 2)
+        .split('\n')
+        .map((line) => `      ${line}`)
+        .join('\n')
+    );
+  }
+
+  if (process.env.E2E_DRY_RUN) {
+    console.log('[e2e-mcp] E2E_DRY_RUN set — stopping before any create_* call. No trip was created.');
+    return;
+  }
 
   const result = await buildTripForMessage(session, { uid: 'e2e' }, classifiedEvents, config);
 
