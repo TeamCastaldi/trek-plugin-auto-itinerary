@@ -20,6 +20,9 @@ const { classifyEvent } = require('../src/classify');
  * Set E2E_DRY_RUN=1 to only fetch and print the live `inputSchema`s for the tools this fixture
  * would call, without calling any create_* tool — useful for eyeballing every SCHEMA-GUESS in
  * src/mcp/payloads.js against a real instance before creating anything.
+ *
+ * Set E2E_SCHEMA_TOOLS=<comma-separated tool names> to additionally dump the inputSchema for any
+ * other live tools (e.g. day-related tools not tied to any fixture) regardless of E2E_FIXTURE.
  */
 function toolNameForType(type) {
   if (type === 'flight' || type === 'train') return 'create_transport';
@@ -58,11 +61,15 @@ async function main() {
   console.log(`[e2e-mcp] MCP session established (fixture: ${fixtureName})`);
 
   const toolsMap = await session.listTools();
-  console.log(`[e2e-mcp] live tools/list returned ${toolsMap.size} tool(s)`);
+  console.log(`[e2e-mcp] live tools/list returned ${toolsMap.size} tool(s):`);
+  console.log(`  ${[...toolsMap.keys()].sort().join(', ')}`);
 
   const relevantToolNames = new Set(['create_trip', 'create_and_assign_place']);
   for (const { type } of activeEvents) relevantToolNames.add(toolNameForType(type));
   if (config.auto_share === 'yes') relevantToolNames.add('create_share_link');
+  for (const name of (process.env.E2E_SCHEMA_TOOLS || '').split(',').map((s) => s.trim()).filter(Boolean)) {
+    relevantToolNames.add(name);
+  }
 
   console.log('[e2e-mcp] live inputSchema for the tool(s) this fixture will call:');
   for (const name of relevantToolNames) {
