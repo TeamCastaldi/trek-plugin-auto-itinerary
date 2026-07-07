@@ -23,7 +23,7 @@ test('extracts an inline text/calendar part', async () => {
 test('returns null when no calendar part is present', async () => {
   const plainEmail = [
     'From: someone@example.com',
-    'To: family-inbox@castaldifamily.com',
+    'To: family-inbox@example.com',
     'Subject: Just saying hi',
     'Content-Type: text/plain',
     '',

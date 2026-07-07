@@ -86,5 +86,5 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     prediction (M0.5) for actual raw IMAP traffic, not just source-code reasoning. Also confirmed
     empirically: a Workspace "alternate email" is a send-as alias into the *primary* account's mailbox,
     not its own IMAP-authenticatable inbox — `imap_user` must be the primary account
-    (`nathan@castaldifamily.com`), while the alternate address (`trek@castaldifamily.com`) is only what
+    (`you@example.com`), while the alternate address (`trek@example.com`) is only what
     gets added as a guest on the calendar invite.

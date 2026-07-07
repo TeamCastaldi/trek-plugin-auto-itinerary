@@ -1,5 +1,5 @@
 From: bookings@testairlines.com
-To: family-inbox@castaldifamily.com
+To: family-inbox@example.com
 Subject: Your flight itinerary UA123
 MIME-Version: 1.0
 Content-Type: multipart/mixed; boundary="OUTER-BOUNDARY"
