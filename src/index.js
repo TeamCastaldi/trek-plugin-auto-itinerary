@@ -3,6 +3,8 @@ const { fetchUnseenMessages } = require('./imap');
 const { extractCalendar } = require('./extract');
 const { parseEvents } = require('./parse');
 const { classifyEvent } = require('./classify');
+const { createSession } = require('./mcp/client');
+const { filterActiveEvents, buildTripForMessage } = require('./mcp/orchestrate');
 
 const LEDGER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS processed_invites (
@@ -45,13 +47,22 @@ module.exports = definePlugin({
               continue;
             }
 
-            for (const event of events) {
-              const { type } = classifyEvent(event);
-              ctx.log.info(
-                `poll-inbox: uid=${message.uid} event uid=${event.uid} sequence=${event.sequence} ` +
-                  `type=${type} cancelled=${event.cancelled} summary="${event.summary}" ` +
-                  `start=${event.start} end=${event.end}`
-              );
+            const classifiedEvents = filterActiveEvents(events.map((event) => classifyEvent(event)));
+            if (!classifiedEvents.length) {
+              ctx.log.info(`poll-inbox: uid=${message.uid} had no active (non-cancelled) events, skipping`);
+              continue;
+            }
+
+            const session = await createSession(ctx.config);
+            const result = await buildTripForMessage(session, message, classifiedEvents, ctx.config);
+            ctx.log.info(
+              `poll-inbox: uid=${message.uid} built trip ${result.tripId} (${result.entityCount} entries)` +
+                (result.shareUrl ? ` share=${result.shareUrl}` : '')
+            );
+            for (const entry of result.trace) {
+              if (!entry.ok) {
+                ctx.log.warn(`poll-inbox: uid=${message.uid} ${entry.step}: ${entry.error}`);
+              }
             }
           } catch (err) {
             ctx.log.error(`poll-inbox: uid=${message.uid} failed, skipping: ${err.message}`);
