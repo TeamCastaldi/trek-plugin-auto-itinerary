@@ -1,4 +1,8 @@
 const { definePlugin } = require('trek-plugin-sdk');
+const { fetchUnseenMessages } = require('./imap');
+const { extractCalendar } = require('./extract');
+const { parseEvents } = require('./parse');
+const { classifyEvent } = require('./classify');
 
 const LEDGER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS processed_invites (
@@ -24,7 +28,31 @@ module.exports = definePlugin({
       id: 'poll-inbox',
       schedule: '*/5 * * * *',
       async handler(ctx) {
-        ctx.log.info('poll-inbox: ingestion not yet implemented');
+        const messages = await fetchUnseenMessages(ctx.config);
+        ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
+
+        for (const message of messages) {
+          const icsText = await extractCalendar(message.source);
+          if (!icsText) {
+            ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
+            continue;
+          }
+
+          const events = parseEvents(icsText);
+          if (!events.length) {
+            ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
+            continue;
+          }
+
+          for (const event of events) {
+            const { type } = classifyEvent(event);
+            ctx.log.info(
+              `poll-inbox: uid=${message.uid} event uid=${event.uid} sequence=${event.sequence} ` +
+                `type=${type} cancelled=${event.cancelled} summary="${event.summary}" ` +
+                `start=${event.start} end=${event.end}`
+            );
+          }
+        }
       },
     },
   ],
