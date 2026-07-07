@@ -122,8 +122,9 @@ test('processMessage builds a trip end-to-end against a real HTTP mock TREK serv
   const server = await startMockTrekServer({
     tokenHandler: (_entry, res) => sendJson(res, 200, { access_token: 'trekoa_test', expires_in: 3600 }),
     mcpHandler: mcpJsonRpcRouter({
-      create_trip: { tripId: 'trip_int_1' },
-      create_and_assign_place: { placeId: 'place_int_1' },
+      create_trip: { trip: { id: 'trip_int_1' } },
+      get_trip_summary: { days: [{ id: 'day_int_1', date: '2026-08-01' }] },
+      create_and_assign_place: { place: { id: 'place_int_1' } },
       create_transport: {},
       create_share_link: { url: 'https://trek.example.com/share/abc' },
     }),
@@ -157,6 +158,7 @@ test('processMessage builds a trip end-to-end against a real HTTP mock TREK serv
       'notifications/initialized',
       'tools/list',
       'create_trip',
+      'get_trip_summary',
       'create_and_assign_place',
       'create_transport',
       'create_share_link',

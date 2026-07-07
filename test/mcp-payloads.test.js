@@ -41,55 +41,81 @@ test('computeTripDateRange spans multiple VEVENTs in one message', () => {
   assert.equal(endDate.toISOString().slice(0, 10), '2026-08-08');
 });
 
-test('buildCreatePlacePayload carries trip id, name, and date', () => {
+test('buildCreatePlacePayload carries the camelCase trip/day ids and name', () => {
   const [event] = loadEvents('flight.ics');
-  const payload = buildCreatePlacePayload({
-    name: event.location,
-    tripId: 'trip_1',
-    date: event.start,
-    allDay: event.allDay,
-  });
+  const payload = buildCreatePlacePayload({ name: event.location, tripId: 42, dayId: 7 });
 
-  assert.equal(payload.trip_id, 'trip_1');
-  assert.equal(payload.name, 'San Francisco International Airport');
-  assert.equal(payload.date, '2026-08-01T12:00:00.000Z');
+  assert.deepEqual(payload, { tripId: 42, dayId: 7, name: 'San Francisco International Airport' });
 });
 
-test('buildCreateAccommodationPayload uses date-only timestamps for an all-day hotel event', () => {
+test('buildCreateAccommodationPayload uses snake_case day ids and no title field', () => {
   const [event] = loadEvents('hotel.ics');
-  const payload = buildCreateAccommodationPayload({ tripId: 'trip_1', placeId: 'place_1', event });
+  const payload = buildCreateAccommodationPayload({
+    tripId: 42,
+    placeId: 5,
+    startDayId: 10,
+    endDayId: 12,
+    event,
+  });
 
-  assert.equal(payload.title, 'Grand Hotel San Francisco');
-  assert.equal(payload.check_in, '2026-08-01');
-  assert.equal(payload.check_out, '2026-08-03');
+  assert.equal(payload.tripId, 42);
+  assert.equal(payload.place_id, 5);
+  assert.equal(payload.start_day_id, 10);
+  assert.equal(payload.end_day_id, 12);
+  assert.equal(payload.title, undefined);
+  // hotel.ics is an all-day event: no time-of-day to report.
+  assert.equal(payload.check_in, undefined);
+  assert.equal(payload.check_out, undefined);
   assert.match(payload.notes, /Confirmation GH-99887/);
 });
 
-test('buildCreateTransportPayload maps the classified type to a transport type', () => {
+test('buildCreateAccommodationPayload reports check_in/check_out as HH:MM for a timed event', () => {
+  const [event] = loadEvents('flight.ics'); // not all-day, has real start/end times
+  const payload = buildCreateAccommodationPayload({
+    tripId: 42,
+    placeId: 5,
+    startDayId: 10,
+    endDayId: 10,
+    event,
+  });
+
+  assert.equal(payload.check_in, event.start.toISOString().slice(11, 16));
+  assert.equal(payload.check_out, event.end.toISOString().slice(11, 16));
+});
+
+test('buildCreateTransportPayload maps the classified type and uses reservation_time fields', () => {
   const [event] = loadEvents('flight.ics');
   const { type } = classifyEvent(event);
   const payload = buildCreateTransportPayload({
-    tripId: 'trip_1',
-    placeId: 'place_1',
+    tripId: 42,
+    startDayId: 10,
+    endDayId: 10,
     event,
     transportType: transportTypeForClassification(type),
   });
 
+  assert.equal(payload.tripId, 42);
   assert.equal(payload.type, 'flight');
-  assert.equal(payload.departure_time, '2026-08-01T12:00:00.000Z');
-  assert.equal(payload.arrival_time, '2026-08-01T14:00:00.000Z');
+  assert.equal(payload.start_day_id, 10);
+  assert.equal(payload.end_day_id, 10);
+  assert.equal(payload.reservation_time, '2026-08-01T12:00:00.000Z');
+  assert.equal(payload.reservation_end_time, '2026-08-01T14:00:00.000Z');
+  assert.equal(payload.place_id, undefined);
 });
 
 test('buildCreateReservationPayload is the generic fallback shape', () => {
   const [event] = loadEvents('generic.ics');
-  const payload = buildCreateReservationPayload({ tripId: 'trip_1', placeId: 'place_1', event });
+  const payload = buildCreateReservationPayload({ tripId: 42, dayId: 10, event });
 
-  assert.equal(payload.trip_id, 'trip_1');
+  assert.equal(payload.tripId, 42);
+  assert.equal(payload.day_id, 10);
   assert.equal(payload.title, event.summary);
+  assert.equal(payload.type, 'other');
+  assert.equal(payload.location, event.location);
 });
 
-test('buildCreateShareLinkPayload only needs the trip id', () => {
-  assert.deepEqual(buildCreateShareLinkPayload({ tripId: 'trip_1' }), { trip_id: 'trip_1' });
+test('buildCreateShareLinkPayload only needs the camelCase trip id', () => {
+  assert.deepEqual(buildCreateShareLinkPayload({ tripId: 42 }), { tripId: 42 });
 });
 
 test('transportTypeForClassification falls back to other for non-transport types', () => {
