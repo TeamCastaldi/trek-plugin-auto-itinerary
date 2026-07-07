@@ -32,25 +32,29 @@ module.exports = definePlugin({
         ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
 
         for (const message of messages) {
-          const icsText = await extractCalendar(message.source);
-          if (!icsText) {
-            ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
-            continue;
-          }
+          try {
+            const icsText = await extractCalendar(message.source);
+            if (!icsText) {
+              ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
+              continue;
+            }
 
-          const events = parseEvents(icsText);
-          if (!events.length) {
-            ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
-            continue;
-          }
+            const events = parseEvents(icsText);
+            if (!events.length) {
+              ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
+              continue;
+            }
 
-          for (const event of events) {
-            const { type } = classifyEvent(event);
-            ctx.log.info(
-              `poll-inbox: uid=${message.uid} event uid=${event.uid} sequence=${event.sequence} ` +
-                `type=${type} cancelled=${event.cancelled} summary="${event.summary}" ` +
-                `start=${event.start} end=${event.end}`
-            );
+            for (const event of events) {
+              const { type } = classifyEvent(event);
+              ctx.log.info(
+                `poll-inbox: uid=${message.uid} event uid=${event.uid} sequence=${event.sequence} ` +
+                  `type=${type} cancelled=${event.cancelled} summary="${event.summary}" ` +
+                  `start=${event.start} end=${event.end}`
+              );
+            }
+          } catch (err) {
+            ctx.log.error(`poll-inbox: uid=${message.uid} failed, skipping: ${err.message}`);
           }
         }
       },

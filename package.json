@@ -5,7 +5,7 @@
   "type": "commonjs",
   "description": "Turns emailed business-trip calendar invites into live TREK trips automatically.",
   "engines": {
-    "node": ">=20.12.0"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "build": "node scripts/build.js",
