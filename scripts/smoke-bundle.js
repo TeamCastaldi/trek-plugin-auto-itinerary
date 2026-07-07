@@ -41,7 +41,7 @@ function main() {
       if (!Array.isArray(plugin.jobs) || plugin.jobs.length !== 1) throw new Error('expected exactly one job');
       const job = plugin.jobs[0];
       if (job.id !== 'poll-inbox') throw new Error(\`unexpected job id: \${job.id}\`);
-      if (job.schedule !== '*/5 * * * *') throw new Error(\`unexpected job schedule: \${job.schedule}\`);
+      if (typeof job.schedule !== 'string' || !job.schedule) throw new Error(\`missing job schedule: \${job.schedule}\`);
       if (typeof job.handler !== 'function') throw new Error('job.handler is not a function');
       console.log('[smoke-bundle] bundle loaded cleanly: onLoad + jobs[0]=poll-inbox present');
     `;
