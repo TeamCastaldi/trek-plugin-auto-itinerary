@@ -25,6 +25,7 @@
     { "key": "imap_user", "label": "IMAP username", "input_type": "text", "scope": "instance", "required": true },
     { "key": "imap_password", "label": "IMAP password", "input_type": "password", "scope": "instance", "required": true, "secret": true },
     { "key": "imap_folder", "label": "IMAP folder", "input_type": "text", "scope": "instance", "required": false, "placeholder": "INBOX" },
+    { "key": "processed_folder", "label": "Processed folder", "input_type": "text", "scope": "instance", "required": false, "hint": "Move successfully-processed messages here (e.g. Processed). Leave blank to only mark \\Seen." },
     { "key": "sender_allowlist", "label": "Sender allowlist", "input_type": "text", "scope": "instance", "required": false, "hint": "Comma-separated sender addresses. Empty allows any sender." },
     { "key": "trek_base_url", "label": "TREK base URL", "input_type": "text", "scope": "instance", "required": true, "hint": "Public APP_URL of this TREK instance, e.g. https://trek.example.com. Used for both /oauth/token and /mcp." },
     { "key": "mcp_client_id", "label": "MCP machine client ID", "input_type": "text", "scope": "instance", "required": true, "hint": "Created under Settings -> Integrations -> MCP -> OAuth Clients -> Machine client." },

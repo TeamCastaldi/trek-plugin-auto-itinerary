@@ -1,10 +1,11 @@
 const { definePlugin } = require('trek-plugin-sdk');
-const { fetchUnseenMessages } = require('./imap');
+const { openConnection, searchUnseen, markProcessed } = require('./imap');
 const { extractCalendar } = require('./extract');
 const { parseEvents } = require('./parse');
 const { classifyEvent } = require('./classify');
 const { createSession } = require('./mcp/client');
 const { filterActiveEvents, buildTripForMessage } = require('./mcp/orchestrate');
+const ledger = require('./ledger');
 
 const LEDGER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS processed_invites (
@@ -30,45 +31,116 @@ module.exports = definePlugin({
       id: 'poll-inbox',
       schedule: '*/5 * * * *',
       async handler(ctx) {
-        const messages = await fetchUnseenMessages(ctx.config);
-        ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
+        const connection = await openConnection(ctx.config);
+        try {
+          const messages = await searchUnseen(connection, ctx.config);
+          ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
 
-        for (const message of messages) {
-          try {
-            const icsText = await extractCalendar(message.source);
-            if (!icsText) {
-              ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
-              continue;
-            }
-
-            const events = parseEvents(icsText);
-            if (!events.length) {
-              ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
-              continue;
-            }
-
-            const classifiedEvents = filterActiveEvents(events.map((event) => classifyEvent(event)));
-            if (!classifiedEvents.length) {
-              ctx.log.info(`poll-inbox: uid=${message.uid} had no active (non-cancelled) events, skipping`);
-              continue;
-            }
-
-            const session = await createSession(ctx.config);
-            const result = await buildTripForMessage(session, message, classifiedEvents, ctx.config);
-            ctx.log.info(
-              `poll-inbox: uid=${message.uid} built trip ${result.tripId} (${result.entityCount} entries)` +
-                (result.shareUrl ? ` share=${result.shareUrl}` : '')
-            );
-            for (const entry of result.trace) {
-              if (!entry.ok) {
-                ctx.log.warn(`poll-inbox: uid=${message.uid} ${entry.step}: ${entry.error}`);
-              }
-            }
-          } catch (err) {
-            ctx.log.error(`poll-inbox: uid=${message.uid} failed, skipping: ${err.message}`);
+          for (const message of messages) {
+            await processMessage(ctx, connection, message);
           }
+        } finally {
+          connection.end();
         }
       },
     },
   ],
 });
+
+module.exports.processMessage = processMessage;
+
+/**
+ * `deps` lets tests inject a fake MCP session factory / orchestrator without a live IMAP or MCP
+ * server; production call sites (the job handler above) rely on the real defaults.
+ */
+async function processMessage(
+  ctx,
+  connection,
+  message,
+  { createSession: createSessionFn = createSession, buildTripForMessage: buildTripFn = buildTripForMessage } = {}
+) {
+  try {
+    const icsText = await extractCalendar(message.source);
+    if (!icsText) {
+      ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
+      return;
+    }
+
+    const events = parseEvents(icsText);
+    if (!events.length) {
+      ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
+      return;
+    }
+
+    const classifiedEvents = events.map((event) => classifyEvent(event));
+    const activeEvents = filterActiveEvents(classifiedEvents);
+    const key = activeEvents.length ? activeEvents[0].event.uid : classifiedEvents[0].event.uid;
+    const entry = await ledger.getEntry(ctx, key);
+
+    if (!activeEvents.length) {
+      if (entry && entry.status === 'done') {
+        await ledger.markCancelled(ctx, entry.uid);
+        ctx.log.info(
+          `poll-inbox: uid=${message.uid} invite cancelled; trip ${entry.trip_id} left as-is, ledger marked cancelled`
+        );
+      } else {
+        ctx.log.info(`poll-inbox: uid=${message.uid} all events cancelled, no prior trip, skipping`);
+      }
+      await markProcessed(connection, ctx.config, message.uid, ctx.log);
+      return;
+    }
+
+    const maxSequence = Math.max(...activeEvents.map(({ event }) => event.sequence || 0));
+    const payloadHash = ledger.computePayloadHash(activeEvents);
+
+    if (entry && entry.status === 'done') {
+      if (maxSequence > entry.sequence || payloadHash !== entry.payload_hash) {
+        ctx.log.warn(
+          `poll-inbox: uid=${message.uid} invite re-sent with changed content/sequence; ` +
+            `trip ${entry.trip_id} may need manual reconciliation (no auto-update in this milestone)`
+        );
+        await ledger.markDone(ctx, entry.uid, { sequence: maxSequence, payloadHash });
+      }
+      await markProcessed(connection, ctx.config, message.uid, ctx.log);
+      return;
+    }
+
+    if (entry && entry.status === 'cancelled') {
+      await markProcessed(connection, ctx.config, message.uid, ctx.log);
+      return;
+    }
+
+    // entry is undefined, or status is 'in_progress'/'error' — new build or crash-recovery resume.
+    const existingTripId = entry && entry.trip_id ? entry.trip_id : null;
+    await ledger.beginProcessing(ctx, {
+      uid: key,
+      messageId: message.messageId,
+      sequence: maxSequence,
+      payloadHash,
+    });
+
+    try {
+      const session = await createSessionFn(ctx.config);
+      const result = await buildTripFn(session, message, classifiedEvents, ctx.config, {
+        existingTripId,
+        onTripCreated: (tripId) => ledger.recordTripCreated(ctx, key, tripId),
+      });
+      await ledger.markDone(ctx, key, { tripId: result.tripId, shareUrl: result.shareUrl });
+      ctx.log.info(
+        `poll-inbox: uid=${message.uid} built trip ${result.tripId} (${result.entityCount} entries)` +
+          (result.shareUrl ? ` share=${result.shareUrl}` : '')
+      );
+      for (const traceEntry of result.trace) {
+        if (!traceEntry.ok) {
+          ctx.log.warn(`poll-inbox: uid=${message.uid} ${traceEntry.step}: ${traceEntry.error}`);
+        }
+      }
+      await markProcessed(connection, ctx.config, message.uid, ctx.log);
+    } catch (err) {
+      await ledger.markError(ctx, key);
+      ctx.log.error(`poll-inbox: uid=${message.uid} failed, will retry next poll: ${err.message}`);
+    }
+  } catch (err) {
+    ctx.log.error(`poll-inbox: uid=${message.uid} failed, skipping: ${err.message}`);
+  }
+}

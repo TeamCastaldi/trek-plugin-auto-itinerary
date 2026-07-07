@@ -35,12 +35,6 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 ## Open TODOs
 
-### TODO M4 — Idempotency & state ledger
-
-Wire the `processed_invites` ledger (schema already migrated in `src/index.js`) into real use:
-two-phase write (`in_progress` → `done`), `SEQUENCE`-based update detection, `CANCEL` handling,
-mail-flag second guard (`\Seen` / processed folder). See `docs/PLAN.md` §4.
-
 ### TODO M5 — Verification harness
 
 `createMockHost` permission-scope tests (`PERMISSION_DENIED` / `RESOURCE_FORBIDDEN`), mock-MCP
@@ -120,3 +114,30 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     guard for the repeat-processing gap this creates until M4's mail-flagging lands. Full live-instance
     verification (real OAuth exchange, real tool schemas) not yet done — needs a live TREK instance,
     tracked as residual risk for M5.
+  - M4 — Idempotency & state ledger: `src/ledger.js` wires the `processed_invites` table into real
+    use. Resolved the ledger-key ambiguity left open since M1: since one message can carry multiple
+    VEVENTs with different UIDs but the locked model is one message = one trip, the `uid` PK now holds
+    the message's first active event's UID as a stand-in identifier (see `docs/PLAN.md` §4). Two-phase
+    write: `beginProcessing` (insert/resume `in_progress`, preserving any prior `trip_id`) →
+    `recordTripCreated` (persists `trip_id` immediately after a fresh `create_trip`, before any
+    sub-entity calls, via a new `onTripCreated` hook on `buildTripForMessage`) → `markDone`. A stale
+    `in_progress` row with a stored `trip_id` resumes the build against it (skipping `create_trip`,
+    via `buildTripForMessage`'s new `existingTripId` option) rather than searching `list_trips`; a
+    `NULL` `trip_id` on a stale row is safe to retry from scratch. `SEQUENCE`/content-hash-based
+    update detection logs a warning and refreshes the ledger fingerprint without calling any MCP
+    update tool (full per-entity delta updates need real, currently SCHEMA-GUESS, `inputSchema`s from
+    a live instance — deferred past M4, flagged explicitly rather than guessed at). An all-cancelled
+    invite marks the ledger `cancelled` (trip left as-is, no auto-revoke). `src/imap.js` split into
+    `openConnection`/`searchUnseen` (now also extracts `Message-Id`) so the connection stays open for
+    the whole job run, plus a best-effort `markProcessed` (marks `\Seen`, optionally moves to a new
+    `processed_folder` instance setting) as the mail-flag second guard. `poll-inbox`'s handler logic
+    was extracted into an exported, dependency-injectable `processMessage` for testing. 21 new tests
+    (64 total): ledger round-trip/resume/hash stability, IMAP flag/move/best-effort-failure and
+    `Message-Id` extraction, orchestrate's resume/`onTripCreated` paths, and a full
+    `poll-inbox` branch-matrix integration test (new invite, no-op re-poll, sequence-bump warning,
+    cancel-after-done, cancel-with-no-prior-trip, in-progress resume, build failure).
+  - Addressed Copilot PR review (PR #4): `computePayloadHash` was hashing `event.sequence` despite
+    being documented as SEQUENCE-independent, so a pure `SEQUENCE` bump with no real content change
+    would still fire the "changed content/sequence" warning. Dropped `sequence` from the hashed
+    fields and added a regression test asserting hash stability across a sequence bump alone (65
+    total tests).

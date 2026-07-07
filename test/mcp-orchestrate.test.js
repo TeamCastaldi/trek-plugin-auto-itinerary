@@ -173,3 +173,44 @@ test('buildTripForMessage filters cancelled events itself, even if the caller fo
   assert.equal(result.entityCount, 0);
   assert.equal(session.calls.length, 0);
 });
+
+test('an existingTripId skips create_trip and reuses the id for sub-entity calls', async () => {
+  const classifiedEvents = loadClassifiedEvents('flight.ics');
+  const session = fakeSession({
+    results: {
+      create_and_assign_place: { placeId: 'place_1' },
+      create_transport: {},
+    },
+  });
+  const onTripCreated = () => {
+    throw new Error('onTripCreated must not fire when resuming an existing trip');
+  };
+
+  const result = await buildTripForMessage(session, { uid: 9 }, classifiedEvents, {}, {
+    existingTripId: 'trip_resumed',
+    onTripCreated,
+  });
+
+  assert.equal(result.tripId, 'trip_resumed');
+  assert.ok(!session.calls.some((c) => c.name === 'create_trip'));
+  assert.equal(session.calls[0].args.trip_id, 'trip_resumed');
+});
+
+test('onTripCreated fires exactly once, right after a fresh create_trip succeeds', async () => {
+  const classifiedEvents = loadClassifiedEvents('flight.ics');
+  const session = fakeSession({
+    results: {
+      create_trip: { tripId: 'trip_fresh' },
+      create_and_assign_place: { placeId: 'place_1' },
+      create_transport: {},
+    },
+  });
+  const createdIds = [];
+
+  const result = await buildTripForMessage(session, { uid: 10 }, classifiedEvents, {}, {
+    onTripCreated: (tripId) => createdIds.push(tripId),
+  });
+
+  assert.equal(result.tripId, 'trip_fresh');
+  assert.deepEqual(createdIds, ['trip_fresh']);
+});
