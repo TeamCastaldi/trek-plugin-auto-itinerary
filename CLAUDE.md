@@ -118,3 +118,8 @@ the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
     `Message-Id` extraction, orchestrate's resume/`onTripCreated` paths, and a full
     `poll-inbox` branch-matrix integration test (new invite, no-op re-poll, sequence-bump warning,
     cancel-after-done, cancel-with-no-prior-trip, in-progress resume, build failure).
+  - Addressed Copilot PR review (PR #4): `computePayloadHash` was hashing `event.sequence` despite
+    being documented as SEQUENCE-independent, so a pure `SEQUENCE` bump with no real content change
+    would still fire the "changed content/sequence" warning. Dropped `sequence` from the hashed
+    fields and added a regression test asserting hash stability across a sequence bump alone (65
+    total tests).
