@@ -154,3 +154,14 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     (`npm run e2e:mcp`) is the real-docker leg: env-var-gated like `scripts/smoke-imap.js`, confirmed
     to skip cleanly with no credentials, but **not yet run against a live TREK instance** — no Docker
     daemon was available in this environment; a runbook for running it is in `docs/PLAN.md` §5.
+  - Added `E2E_DRY_RUN` to `scripts/e2e-mcp.js`: prints the live `tools/list` `inputSchema` for every
+    tool a fixture would call, then stops before any `create_*` call — lets schemas be vetted
+    against every `SCHEMA-GUESS` in `src/mcp/payloads.js` without creating a real trip.
+  - **First live run against a real TREK instance** (2026-07-07) surfaced a real schema bug: the
+    initial run predated the `E2E_DRY_RUN` pull and created a live trip for real, whose error
+    response revealed `create_trip` returns `{ trip: { id, ... } }` (the full row nested under
+    `trip`), not the guessed bare `{ tripId }`. Fixed in `src/mcp/orchestrate.js` via new
+    `extractEntity`/`extractId` helpers that unwrap `{ <entity>: {...} }` first and fall back to the
+    old flat guess for resilience; added a regression test using the real captured response shape
+    (71 total tests). The other `create_*` tools' result shapes are still unconfirmed guesses,
+    updated to note they *assume* the same wrapping convention pending their own live verification.

@@ -196,6 +196,37 @@ test('an existingTripId skips create_trip and reuses the id for sub-entity calls
   assert.equal(session.calls[0].args.trip_id, 'trip_resumed');
 });
 
+test('extracts the trip id from the real live { trip: { id, ... } } response shape', async () => {
+  // Captured from a live TREK instance (2026-07-07): create_trip nests the full created row
+  // under `trip`, not a bare `{ tripId }` as originally guessed.
+  const classifiedEvents = loadClassifiedEvents('flight.ics');
+  const session = fakeSession({
+    results: {
+      create_trip: {
+        trip: {
+          id: 3,
+          user_id: 2,
+          title: 'Flight UA123 to SFO',
+          start_date: '2026-08-01',
+          end_date: '2026-08-01',
+          currency: 'EUR',
+          is_owner: 1,
+          owner_username: 'Nathan',
+        },
+      },
+      create_and_assign_place: { place: { id: 7 } },
+      create_transport: {},
+    },
+  });
+
+  const result = await buildTripForMessage(session, { uid: 11 }, classifiedEvents, {});
+
+  assert.equal(result.tripId, 3);
+  const transportCall = session.calls.find((c) => c.name === 'create_transport');
+  assert.equal(transportCall.args.trip_id, 3);
+  assert.equal(transportCall.args.place_id, 7);
+});
+
 test('onTripCreated fires exactly once, right after a fresh create_trip succeeds', async () => {
   const classifiedEvents = loadClassifiedEvents('flight.ics');
   const session = fakeSession({

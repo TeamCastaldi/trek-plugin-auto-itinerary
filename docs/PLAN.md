@@ -283,6 +283,16 @@ login)" to mint a `client_credentials` pair scoped `trips:write places:write res
 trips:share`, and export `E2E_TREK_BASE_URL=http://localhost:3000`, `E2E_MCP_CLIENT_ID`,
 `E2E_MCP_CLIENT_SECRET` before running `npm run e2e:mcp`.
 
+**First live run result (2026-07-07, against a real family TREK instance):** `create_trip` returns
+`{ trip: { id, user_id, title, start_date, end_date, currency, ... } }` — the full created row
+nested under the entity's singular name — not the bare `{ tripId }` originally guessed. Fixed in
+`src/mcp/orchestrate.js`'s `extractEntity`/`extractId` helpers, which now unwrap `{ <entity>: {...}
+}` first and fall back to the old flat guesses for resilience. The other `create_*` tools
+(`create_and_assign_place`, `create_transport`/`create_accommodation`/`create_reservation`,
+`create_share_link`) are assumed — not yet confirmed — to follow the same wrapping convention;
+re-running `npm run e2e:mcp` (ideally with `E2E_DRY_RUN=1` first, and per-fixture via `E2E_FIXTURE`
+to exercise every tool) is what will confirm or correct those.
+
 ---
 
 ## Assumptions & risks

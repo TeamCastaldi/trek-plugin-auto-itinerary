@@ -20,6 +20,26 @@ function filterActiveEvents(classifiedEvents) {
 }
 
 /**
+ * Unwraps a `create_*` tool result. Verified against a live TREK instance (2026-07-07):
+ * `create_trip` returns `{ trip: { id, user_id, title, ... } }` — the full created row nested
+ * under the entity's singular name, not a bare `{ tripId }` as originally guessed. The other
+ * `create_*` tools are assumed (not yet verified) to follow the same `{ <entity>: { id } }`
+ * convention; the flat `<entity>Id`/`id` fallbacks are kept for resilience in case a given tool
+ * or TREK version differs.
+ */
+function extractEntity(result, entityKey) {
+  if (!result) return null;
+  if (result[entityKey] && typeof result[entityKey] === 'object') return result[entityKey];
+  return result;
+}
+
+function extractId(result, entityKey) {
+  const entity = extractEntity(result, entityKey);
+  if (!entity) return undefined;
+  return entity.id ?? entity[`${entityKey}Id`];
+}
+
+/**
  * Best-effort check (never throws) that a payload's top-level keys appear in the tool's live
  * `inputSchema` properties, so a wrong SCHEMA-GUESS in payloads.js surfaces as a log line instead
  * of a silent bad request.
@@ -88,8 +108,7 @@ async function buildTripForMessage(
     record('create_trip', tripPayload);
 
     const tripResult = await session.callTool('create_trip', tripPayload);
-    // SCHEMA-GUESS: exact result field name for the created trip's id is unverified.
-    tripId = tripResult && tripResult.tripId;
+    tripId = extractId(tripResult, 'trip');
     if (!tripId) {
       throw new Error(
         `create_trip did not return a usable trip id; result was: ${JSON.stringify(tripResult)}`
@@ -111,8 +130,9 @@ async function buildTripForMessage(
       });
       record('create_and_assign_place', placePayload);
       const placeResult = await session.callTool('create_and_assign_place', placePayload);
-      // SCHEMA-GUESS: exact result field name for the created place's id is unverified.
-      placeId = placeResult && placeResult.placeId;
+      // SCHEMA-GUESS: not yet verified live; assumes the same { place: { id } } convention
+      // confirmed for create_trip above.
+      placeId = extractId(placeResult, 'place');
       trace.push({ step: 'create_and_assign_place', tool: 'create_and_assign_place', ok: true });
     }
 
@@ -145,8 +165,10 @@ async function buildTripForMessage(
     const shareLinkPayload = buildCreateShareLinkPayload({ tripId });
     record('create_share_link', shareLinkPayload);
     const shareResult = await session.callTool('create_share_link', shareLinkPayload);
-    // SCHEMA-GUESS: exact result field name for the share URL is unverified.
-    shareUrl = shareResult && shareResult.url;
+    // SCHEMA-GUESS: not yet verified live; assumes the same { share_link: { url } }/{ url }
+    // convention confirmed for create_trip above.
+    const shareEntity = extractEntity(shareResult, 'share_link');
+    shareUrl = (shareEntity && shareEntity.url) || (shareResult && shareResult.url) || null;
     trace.push({ step: 'create_share_link', tool: 'create_share_link', ok: true });
   }
 
