@@ -46,11 +46,27 @@ against `src/imap.js`'s captured `To`/`Cc` headers (mirroring the existing `send
 convention), first-match-wins, falling back unchanged to the base single-account settings when
 nothing matches (fully backward-compatible for single-account installs).
 
-### TODO M8 — Package, sign, publish
+### TODO M8 — Publish to the community registry (long-term, optional)
 
-`trek-plugin-sdk validate` + `pack`, `keygen`/`sign` (Ed25519), sideload to Admin → Plugins; optionally
-a `docs/screenshot.png` (note: `docs/` is excluded from the packed artifact, so this only matters for
-the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
+**Short-term deployment (private/single-account use) is done** — confirmed working against the real
+family instance; see README's Deployment section for the actual steps (`pack` → sideload via
+Admin → Plugins → activate → configure settings). No signing, no GitHub release, no registry PR
+needed for that path at all.
+
+This TODO is only for *eventually* publishing to the public `mauriceboe/TREK-Plugins` registry, so
+other TREK users can install it — not required for our own use:
+
+- `keygen`/`sign` (Ed25519) — sideloaded installs never require this; it only matters for
+  registry-verified installs (trust-on-first-use key pinning).
+- A real `docs/screenshot.png` or similar (note: `docs/` is excluded from the packed artifact, so
+  this only matters for the README, not the zip) — `trek-plugin preflight`'s README gate requires
+  `## What it does`/`## Screenshots`/`## Permissions`/`## Setup` sections, ≥400 chars of real prose,
+  at least one resolvable screenshot image, and every declared manifest permission mentioned in the
+  README's prose.
+- A tagged GitHub release with the packed `plugin.zip` as a release asset.
+- `trek-plugin entry` (builds the registry JSON entry from the manifest + release + optional
+  signature) → `preflight` (runs the registry's CI checks locally, over the network, before opening
+  a PR) → `submit` (forks `mauriceboe/TREK-Plugins`, commits the entry, opens the PR).
 
 ### TODO M9 (v1.1) — Modular Extraction & Router
 
@@ -202,11 +218,17 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     `test/mcp-integration.test.js` throughout, including a `get_trip_summary` mock in every
     orchestrate test that reaches day resolution and a new test asserting the explicit
     date-not-found error (73 total tests). Renumbered the roadmap to make room: multi-account
-    routing is now **M7**, packaging is **M8**, and the v1.1 unstructured-ingestion milestones are
-    now **M9–M12**. **Confirmed live** (2026-07-07): a full non-dry-run `npm run e2e:mcp` against
-    `travel.castaldifamily.com` for all three remaining fixtures — `flight.ics` (trip 5,
-    `create_transport`), `hotel.ics` (trip 6, `create_accommodation`), `generic.ics` (trip 7,
-    `create_reservation`) — each completed end-to-end with **zero schema-guess mismatches** and
-    rendered correctly in the app. TODO M6 is fully closed. Five trips from this milestone's live
-    debugging (ids 3–7, two throwaway/broken plus three working confirmations) are safe to delete
-    manually from the app — there is no `delete_trip` tool.
+    routing is now **M7**, community-registry publishing is **M8**, and the v1.1
+    unstructured-ingestion milestones are now **M9–M12**. **Confirmed live** (2026-07-07): a full
+    non-dry-run `npm run e2e:mcp` against `travel.castaldifamily.com` for all three remaining
+    fixtures — `flight.ics` (trip 5, `create_transport`), `hotel.ics` (trip 6,
+    `create_accommodation`), `generic.ics` (trip 7, `create_reservation`) — each completed
+    end-to-end with **zero schema-guess mismatches** and rendered correctly in the app. TODO M6 is
+    fully closed. Five trips from this milestone's live debugging (ids 3–7, two throwaway/broken
+    plus three working confirmations) are safe to delete manually from the app — there is no
+    `delete_trip` tool.
+  - **Sideload deployment confirmed** (2026-07-07): `npm run pack` → Admin → Plugins upload on
+    `travel.castaldifamily.com` succeeded, no signing required, landed inactive, activated
+    manually, settings configured. This is the complete deployment path for private/single-account
+    use — see README's Deployment section. Split TODO M8 (previously "Package, sign, publish") into
+    this now-done short-term path and a long-term-only "publish to the community registry" TODO.
