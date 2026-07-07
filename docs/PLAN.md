@@ -29,6 +29,7 @@ calendars.
 ## Corrections to the original brief (these change the design — read first)
 
 | # | Original assumption | Verified reality | Impact |
+
 |---|---|---|---|
 | 1 | `jobs` (and `hooks`/`entryPoints`) are manifest fields | **Jobs live in server code** via `definePlugin({ jobs:[…] })` in `server/index.js`. The manifest only declares `permissions`, `egress`, `capabilities`, deps, `settings`. | Cron schedule is code, not JSON. |
 | 2 | `ctx.trips.*` is barred in jobs, so route via MCP | True **and stronger**: there is **no `ctx.trips.create` at all** (ctx can only *update* a trip / add places/days). MCP `create_trip` is the *only* way to spawn a Trip — independent of the no-user rule. | MCP is mandatory, not a workaround. |
@@ -53,9 +54,8 @@ routes. Validation is code-based (`validateManifest` in `plugin-sdk/src/manifest
 `trek-plugin-sdk validate` (or `npm run validate`).
 
 **Permissions we need:** `db:own` (isolated SQLite) today; `http:outbound:<host>` (host-scoped) +
-matching `egress[]` entries once M2/M3 add real IMAP/MCP calls. A host in `egress[]` without the
-matching `http:outbound:<host>` permission is **silently blocked at runtime** — the two must mirror
-exactly.
+matching `egress[]` entries. A host in `egress[]` without the matching `http:outbound:<host>`
+permission is **silently blocked at runtime** — the two must mirror exactly.
 
 **`ctx` surface (server code):** `ctx.db.query/exec/migrate` (own SQLite), `ctx.config` (resolved
 settings, secrets decrypted server-side), `ctx.log.info/warn/error`, `ctx.id`, plus user-scoped
@@ -71,6 +71,7 @@ arrive via `ctx.config`.
 All run in plain forked Node child processes (not a VM sandbox).
 
 **MCP server** (`server/src/mcp`, transport = `StreamableHTTPServerTransport`):
+
 - Endpoint `POST {APP_URL}/mcp` (Streamable HTTP; JSON-RPC + SSE leg; `Mcp-Session-Id` header). `403`
   if the MCP addon is disabled, `401` on auth failure.
 - Auth: `POST {APP_URL}/oauth/token` with `grant_type=client_credentials`, `client_id`, `client_secret`,
@@ -111,20 +112,15 @@ permission model in unit tests. Packaging limits: 25 MB/file, 50 MB total, 4000 
 
 ## 1. Manifest structure (`trek-plugin.json`)
 
-Current manifest (`trek-plugin.json` at repo root) has `permissions: ["db:own"]` only — no
-`http:outbound`/`egress` yet, since no code makes outbound calls until M2/M3. When those land, add
-one `http:outbound:<host>` + one `egress[]` entry **per host** (the IMAP host and the TREK instance
-host), mirrored exactly, plus the settings fields already scaffolded (see below).
+Current manifest (`trek-plugin.json` at repo root) has `permissions: ["db:own"]` + generated
+`http:outbound:<host>` and `egress[]` entries per host (the IMAP host and the TREK instance host),
+mirrored exactly, based on the `EGRESS_HOSTS` build env var.
 
-**Open note (O1):** egress hosts are *static* manifest strings, but the real IMAP/TREK hostnames come
-from instance settings (filled in by the admin at install time, not known at build time). Resolve by
-either documenting that the admin's settings must match the manifest's `egress[]`/`http:outbound:<host>`
-entries, or using a `*.wildcard` egress entry if the deployment allows it.
-
-**Instance settings** (already scaffolded in `trek-plugin.json`, `scope: "instance"`, admin-set once):
+**Instance settings** (scaffolded in `trek-plugin.json`, `scope: "instance"`, admin-set once):
 `imap_host`, `imap_port`, `imap_tls` (`tls`/`starttls`), `imap_user`, `imap_password` (secret),
-`imap_folder`, `sender_allowlist`, `trek_base_url`, `mcp_client_id`, `mcp_client_secret` (secret),
-`mcp_scopes`, `auto_share`. The poll cron interval is defined in code (`src/index.js`), not settings.
+`imap_folder`, `sender_allowlist` (will need e.g. `*@amextravel.com` in v1.1), `trek_base_url`,
+`mcp_client_id`, `mcp_client_secret` (secret), `mcp_scopes`, `auto_share`. The poll cron interval
+is defined in code (`src/index.js`), not settings.
 
 ---
 
@@ -133,10 +129,11 @@ entries, or using a `*.wildcard` egress entry if the deployment allows it.
 All candidates verified **pure-JS, no native addons** (registry metadata):
 
 | Purpose | Pick | License | Bundling note |
+
 |---|---|---|---|
-| `.ics` parse | **`node-ical`** (0.26.x) | Apache-2.0 | Lean (`rrule-temporal` + `temporal-polyfill`), sync string parse, no network. Bundles clean. Alt: `ical.js` (Mozilla, zero-dep) if size matters. |
+| `.ics` parse | **`node-ical`** (0.26.x) | Apache-2.0 | Lean (`rrule-temporal` + `temporal-polyfill`), sync string parse, no network. Bundles clean. |
 | Email → attachment | **`mailparser`** (3.9.x) | MIT | Extracts `text/calendar` parts from raw RFC822; no workers/native. Bundles clean. |
-| IMAP | **`imap-simple`/`node-imap`** (locked decision) | MIT | Small, trivially-bundleable tree (`imap`, `iconv-lite`, `utf8`, `quoted-printable`, `uuencode`, `nodeify`), no workers. `imapflow` was considered but transitively depends on `pino` (bundler-hostile); revisit only if a bundle smoke test on `imap-simple` fails. |
+| IMAP | **`imap-simple`/`node-imap`** | MIT | Small, trivially-bundleable tree (`imap`, `iconv-lite`, `utf8`, `quoted-printable`, `uuencode`, `nodeify`), no workers. |
 
 **Runtime/packaging strategy (given TREK runs no `npm install` and strips `node_modules`):** all
 three land as regular `dependencies` (not `devDependencies`), bundled into `server/index.js` via
@@ -148,14 +145,16 @@ three land as regular `dependencies` (not `devDependencies`), bundled into `serv
 ## 3. Execution & workflow mapping
 
 **Job loop** (server code, no user context → cannot touch `ctx.trips.*` → all trip mutations via MCP).
-Current skeleton in `src/index.js`: `jobs: [{ id: 'poll-inbox', schedule: '*/5 * * * *', handler }]`,
-`onLoad` migrates the `processed_invites` ledger. Handler is currently a stub.
+Current skeleton in `src/index.js`: `jobs: [{ id: 'poll-inbox', schedule: '*/5 * * * *', handler }]`.
+Handler is wired up with parsing and MCP orchestration (completed in M2/M3).
 
-Per-run pipeline (to build in M2/M3):
+Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M7+):
+
 1. **IMAP**: connect (settings from `ctx.config`) → open `imap_folder` → search **UNSEEN** (+ optional
    sender allowlist) → fetch raw source of each message.
-2. **Extract**: `mailparser` → find the `text/calendar` part (attachment `*.ics` or inline).
-3. **Parse**: `node-ical` → iterate `VEVENT`(s).
+2. **Extract**: `mailparser` → find the `text/calendar` part (v1.1: fall back to plain text/HTML).
+3. **Parse**: `node-ical` → iterate `VEVENT`(s). (v1.1: `parse-router.js` delegates to `src/parsers/ics.js`
+   or unstructured shards like `amex.js`).
 4. **Idempotency gate** (§4): skip if the `UID`(+`SEQUENCE`) is already in the `ctx.db` ledger.
 5. **Auth**: ensure a fresh `trekoa_` token (token manager: cache ~55 min, re-`POST /oauth/token`).
 6. **MCP session**: open Streamable HTTP session at `/mcp`; `tools/list` once to read live `inputSchema`s.
@@ -168,20 +167,20 @@ Per-run pipeline (to build in M2/M3):
 **Conditional parsing engine — `.ics` → MCP payloads:**
 
 | `.ics` field | Maps to | Tool / field |
+
 |---|---|---|
-| `DTSTART` / `DTEND` (+ VTIMEZONE, all-day) | trip date range → auto-generated days; event times | `create_trip` dates; `create_transport` dep/arr times |
+| `DTSTART` / `DTEND` | trip date range → auto-generated days; event times | `create_trip` dates; `create_transport` dep/arr times |
 | `SUMMARY` | trip title and/or reservation/event title | `create_trip.title`, `create_reservation.title` |
 | `LOCATION` | place (name → geocode/coords per tool schema) | `create_and_assign_place` / `create_place` |
-| `DESCRIPTION` (notes text) | day notes / reservation notes / confirmation codes | day note or `create_*` notes/confirmation |
+| `DESCRIPTION` | day notes / reservation notes / confirmation codes | day note or `create_*` notes/confirmation |
 | `UID` (+ `SEQUENCE`) | idempotency key + update detection | ledger PK (§4) |
-| `ORGANIZER`/`ATTENDEE` | ignored or noted | — |
-| `METHOD:CANCEL` / `STATUS:CANCELLED` | cancellation | update/delete existing trip item |
+| `METHOD:CANCEL` | cancellation | update/delete existing trip item |
 
 **Event-type classifier** (which tool to call) — keyword/heuristic on `SUMMARY`/`DESCRIPTION`/
 `CATEGORIES`/organizer domain: flight/airline/PNR → `create_transport(type:flight)`; train → transport;
-hotel/check-in/check-out → `create_accommodation`; otherwise a generic `create_reservation`
-(restaurant/event/tour/meeting). Default fallback = one `create_reservation` pinned to the day, so no
-invite is dropped.
+hotel/check-in/check-out → `create_accommodation`; otherwise a generic `create_reservation`.
+*Architectural constraint (M8):* All future unstructured parsers (AMEX, Concur) must output this exact
+normalized `VEVENT` interface so the classifier and MCP payload builders remain completely untouched.
 
 ---
 
@@ -191,11 +190,12 @@ invite is dropped.
 including safe handling of updates and partial failures.
 
 - **Primary key:** iCalendar `UID` (globally unique per event) + `SEQUENCE` (bumped on updates).
-  Secondary guard: RFC822 `Message-Id`.
+  For v1.1 unstructured emails (AMEX, Concur), this pivots to a deterministic hash (e.g.,
+  `hash(PNR + StartDate + Destination)`) or RFC822 `Message-Id` (M9).
 - **Ledger in `ctx.db`** (own SQLite, `db:own`) — schema already migrated in `src/index.js`:
   `processed_invites(uid TEXT PRIMARY KEY, message_id TEXT, sequence INT, trip_id TEXT, share_url TEXT,
   status TEXT, payload_hash TEXT, created_at, updated_at)`. `status ∈ {in_progress, done, error}`.
-  **Not yet wired into any read/write logic** — that's M4.
+  **Not yet wired into any read/write logic — that's M4's job.**
 - **Two-phase write to survive crashes:** insert `in_progress` **before** the first MCP call; flip to
   `done` after the trip is fully built. If a later run finds `in_progress`, reconcile via `list_trips`/
   `get_trip_summary` (or a deterministic external key) instead of blindly re-creating.
@@ -205,14 +205,13 @@ including safe handling of updates and partial failures.
 - **Updates:** incoming `SEQUENCE > stored` → update the existing `trip_id` (`update_day`/`create_*` deltas)
   rather than create. **Cancellations** (`METHOD:CANCEL`/`STATUS:CANCELLED`) → mark ledger `cancelled`,
   optionally revoke share link / delete trip item.
-- **Dedup across restart/no-DB edge:** if `db:own` is ever unavailable, fall back to a
-  `get_trip_summary`/`list_trips` lookup keyed on a stable title+UID marker stored in trip notes.
 
 ---
 
 ## 5. Verification plan
 
 | Layer | How | Asserts |
+
 |---|---|---|
 | **Permission scoping** | `createMockHost({ grants:['db:own'] })`; call an ungranted method | rejects with `PERMISSION_DENIED`; job-context trip read → `RESOURCE_FORBIDDEN` |
 | **Parser (pure)** | fixture `.ics` files → `node-ical` → mapper | correct trip/transport/reservation JSON per the mapping table; handles all-day, TZ, multi-VEVENT, CANCEL |
@@ -221,58 +220,43 @@ including safe handling of updates and partial failures.
 | **Local run** | `trek-plugin-sdk dev --port 4317` + `dev-fixtures.json` (trips/users/config) | job executes, `db:own` persists ledger, hot reload |
 | **MCP integration** | mock local HTTP server for `POST /oauth/token` + `/mcp` (`tools/list`, `create_*`); then a real local TREK docker with a machine client | token exchange, session, tool calls, share link |
 | **Packaging** | `trek-plugin-sdk validate` → `pack` | manifest/layout valid; no `node_modules`/native; within size limits |
-| **Bundle smoke test** | `node -e "require('./server/index.js')"` on the esbuild output | deps resolve with `node_modules` absent |
-| **Live IMAP smoke test** | first real `tls.connect`/IMAP login against a real mailbox from a real TREK instance | confirms the R1 source-read prediction empirically (see Assumptions & risks) |
-
-Mock MCP fixtures (`dev-fixtures.json` + a stub `/mcp` server) let us validate the full flow **without a
-live TREK**; a real TREK docker instance validates the real OAuth + Streamable HTTP path before we
-`pack`/`sign`/`publish`.
+| **Live IMAP smoke test** | `scripts/smoke-imap.js` | passed in M2 against Gmail/Workspace, empirically confirming R1 |
 
 ---
 
 ## Assumptions & risks
 
-- **R1 (RESOLVED — high confidence, from source):** Read TREK's actual runtime source
-  (`server/src/nest/plugins/runtime/plugin-host-entry.ts`, `egress-policy.ts`). The egress guard patches
-  **`net.Socket.prototype.connect`** — the single TCP choke point that `node:http/https/net/tls` and
-  `undici`/`fetch` all funnel through — plus wraps `globalThis.fetch` directly ("four channels... so a
-  plugin can't sidestep one with another"). Since `tls.connect()` builds on that same `net.Socket`, a raw
-  IMAP-over-TLS client hits the **identical** host-allowlist + SSRF check as an HTTP call. Node's OS
-  `--permission` flag is fs-read-only (no network-scoping flag exists — confirmed in `paths.ts`), and
-  `net`/`tls` are not blocked from `require()` (only the literal `'trek-plugin-sdk'` string is intercepted).
-  Plugins run as plain forked Node processes (`fork(entry, ...)`), not a VM sandbox. **Conclusion: raw IMAP
-  TLS to an allow-listed host will work.** Residual gap: no live subprocess test observed this directly
-  (TREK's own suite only unit-tests the guard's pure helpers) — a live smoke test in M2 will confirm.
-  **Option A is a go.**
-- **R1a (confirmed, consistent with R1):** The same choke point's SSRF backstop (`isBlockedIp`) blocks
-  loopback/private/link-local/CGNAT/ULA regardless of allowlisting — so `http://127.0.0.1/mcp` is
-  categorically out. We've locked in **public-hostname** TREK deployment (`APP_URL` resolves to a
-  routable IP), so this guard simply won't trigger for our `/mcp` and `/oauth/token` calls — no
-  `ALLOW_INTERNAL_NETWORK` override needed.
+- **R1 (RESOLVED — high confidence, confirmed empirically in M2):** The egress guard patches
+  `net.Socket.prototype.connect` — the single TCP choke point that all network calls funnel through.
+  A raw IMAP-over-TLS client hits the **identical** host-allowlist + SSRF check as an HTTP call. Node's OS
+  `--permission` flag is fs-read-only, and `net`/`tls` are not blocked from `require()`. **Live smoke test
+  in M2 confirmed this empirically. Option A is a go.**
+- **R1a (confirmed):** The SSRF backstop (`isBlockedIp`) blocks loopback/private IPs regardless of
+  allowlisting — so `http://127.0.0.1/mcp` is categorically out. We've locked in **public-hostname**
+  TREK deployment (`APP_URL` resolves to a routable IP).
 - **R2:** Machine token is **user-bound** → trips are owned by that user; the family sees them via the
-  **public share link** (`create_share_link`), not membership. This is the intended sharing model
-  (confirmed with the user).
-- **R3:** `create_place` may need coordinates vs a name string — read the live `inputSchema` (`tools/list`)
-  and geocode via `geo:read` if required.
-- **R4:** `.ics` variety (recurring `RRULE`, all-day, timezones, `METHOD:REQUEST/CANCEL`) — cover in fixtures.
-- **R5:** MCP addon must be enabled (`/mcp` else `403`) and `APP_URL` set (else OAuth discovery fails) —
-  operational prerequisites to document for whoever deploys this.
-- **R6:** AGPL-3.0 host vs MIT plugin — fine; TREK treats plugins as independently authored/licensed
-  (manifest `license` field, Ed25519-signed artifacts). No copyleft obligation on our separately
-  distributed plugin.
-- **R7:** Rate limit 300 req/min/user — batch per-invite tool calls; back off on 429.
+  **public share link**, not membership.
+- **R3:** `create_place` may need coordinates vs a name string — read the live `inputSchema` (`tools/list`).
+- **R4:** `.ics` variety (recurring `RRULE`, all-day, timezones) — cover in fixtures.
 
 ## Decisions (locked)
-- **Ingestion:** Option **A — IMAP direct** (source-verified high confidence, see R1); pre-designated
-  fallback **C — Cloudflare Email Routing webhook → `auth:false` plugin route** if a live smoke test
-  ever contradicts the source-read prediction. (Option B / HTTPS mail API held in reserve.)
+
+- **Ingestion:** Option **A — IMAP direct** (source-verified and tested live).
 - **MCP reachability:** call `/oauth/token` + `/mcp` via the **public `APP_URL` host**, never loopback.
 - **Trip model:** **one invite → one trip**, and **auto-publish** the public share link (`trips:share`);
-  the family views via that link (the machine token is user-bound, so trips are owned by the client's
-  owner — R2).
+  the family views via that link.
 - **IMAP client:** **`imap-simple`/`node-imap`** (guaranteed-clean bundle).
+- **Parsing Architecture (v1.1):** Use the **Strategy pattern** (`src/parsers/`). Shards (`ics.js`,
+  `amex.js`, `concur.js`) are heavily isolated to prevent unstructured parsing logic from destabilizing
+  the core pipeline.
 
-## Residual implementation notes
-- **O1 (egress hosts):** `egress[]` / `http:outbound:<host>` are *static* manifest strings, but the IMAP
-  and TREK hosts come from instance settings. Resolve by baking the known self-hosted hostnames into the
-  manifest (or `*.wildcard`) at build/config time and documenting that the admin's settings must match.
+---
+
+## Roadmap: v1.1 Unstructured Ingestion (AMEX, Concur)
+
+*Post-v1.0 architectural plan to support non-standard travel emails without breaking the `.ics` core.*
+
+- **M7: Modular Extraction & Router:** Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a parsing router (`src/parse-router.js`) that queries a registry of isolated parser strategies (`canParse(emailPayload)`) and delegates accordingly.
+- **M8: Parser Shards (`src/parsers/`):** Move `node-ical` logic into `src/parsers/ics.js`. Build `src/parsers/amex.js`. Every parser shard must output a normalized `VEVENT`-style object array (`summary`, `start`, `end`, `location`, `description`) to keep the downstream MCP orchestrator format-agnostic.
+- **M9: Ledger & Idempotency Pivot:** Expand `processed_invites` schema/logic. Use a deterministic hash (`hash(PNR + StartDate)`) or the RFC822 `Message-Id` as the primary key for unstructured emails to safely handle updates and block duplicates.
+- **M10: Fixtures, Verification & Release:** Add `.eml` fixtures for the new shards. Write isolated unit tests in `test/parsers/`. Update manifest/settings, bump to `1.1.0`, validate, pack, and publish.
