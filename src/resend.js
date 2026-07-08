@@ -21,10 +21,12 @@ function verifyWebhookSecret(req, config) {
   const provided = req.query && req.query.secret;
   if (!provided) return false;
 
-  const expectedBuf = Buffer.from(String(expected));
-  const providedBuf = Buffer.from(String(provided));
-  if (expectedBuf.length !== providedBuf.length) return false;
-  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+  // Hash both to a fixed-length digest before comparing, so `timingSafeEqual` always runs on
+  // equal-length buffers — a raw-buffer compare would short-circuit (and leak input length) for
+  // any wrong-length guess, undermining the point of a constant-time check.
+  const expectedHash = crypto.createHash('sha256').update(String(expected)).digest();
+  const providedHash = crypto.createHash('sha256').update(String(provided)).digest();
+  return crypto.timingSafeEqual(expectedHash, providedHash);
 }
 
 /**

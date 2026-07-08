@@ -31,7 +31,8 @@ module.exports = definePlugin({
       method: 'POST',
       path: '/resend-webhook',
       // Public: Resend can't carry a TREK user session, so this route runs unauthenticated and
-      // relies on the shared `webhook_secret` header check below instead.
+      // relies on the shared `webhook_secret` query-param check below instead (PluginRequest has
+      // no headers — see src/resend.js).
       auth: false,
       async handler(req, ctx) {
         if (!verifyWebhookSecret(req, ctx.config)) {
@@ -152,7 +153,7 @@ async function processMessage(
       return { ok: false, error: err.message };
     }
   } catch (err) {
-    ctx.log.error(`resend-webhook: email_id=${emailId} failed, skipping: ${err.message}`);
+    ctx.log.error(`resend-webhook: email_id=${emailId} failed, will retry on next Resend delivery: ${err.message}`);
     return { ok: false, error: err.message };
   }
 }
