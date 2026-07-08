@@ -14,7 +14,7 @@ const { classifyEvent } = require('../src/classify');
  * only fully resolved once this has been run once against a real instance and its schema-check
  * trace comes back empty.
  *
- * Skips cleanly (same pattern as scripts/smoke-imap.js) unless E2E_TREK_BASE_URL/
+ * Skips cleanly (env-var-gated, same pattern used throughout this repo) unless E2E_TREK_BASE_URL/
  * E2E_MCP_CLIENT_ID/E2E_MCP_CLIENT_SECRET are set. See docs/PLAN.md §5 for the docker run + machine
  * client setup steps to get those values.
  *

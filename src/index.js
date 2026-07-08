@@ -1,5 +1,5 @@
 const { definePlugin } = require('trek-plugin-sdk');
-const { openConnection, searchUnseen, markProcessed } = require('./imap');
+const { verifyWebhookSecret } = require('./resend');
 const { extractCalendar } = require('./extract');
 const { parseEvents } = require('./parse');
 const { classifyEvent } = require('./classify');
@@ -26,22 +26,31 @@ module.exports = definePlugin({
     ctx.log.info('auto-itinerary loaded');
   },
 
-  jobs: [
+  routes: [
     {
-      id: 'poll-inbox',
-      schedule: '*/5 * * * *',
-      async handler(ctx) {
-        const connection = await openConnection(ctx.config);
-        try {
-          const messages = await searchUnseen(connection, ctx.config);
-          ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
-
-          for (const message of messages) {
-            await processMessage(ctx, connection, message);
-          }
-        } finally {
-          connection.end();
+      method: 'POST',
+      path: '/resend-webhook',
+      // Public: Resend can't carry a TREK user session, so this route runs unauthenticated and
+      // relies on the shared `webhook_secret` header check below instead.
+      auth: false,
+      async handler(req, ctx) {
+        if (!verifyWebhookSecret(req, ctx.config)) {
+          ctx.log.warn('resend-webhook: rejected request with missing/invalid webhook secret');
+          return { status: 401, body: { error: 'unauthorized' } };
         }
+
+        const payload = req.body;
+        if (!payload || payload.type !== 'email.received') {
+          // Resend also sends delivery/bounce/etc. events to the same endpoint if configured that
+          // way; anything that isn't an inbound message is a no-op ack, not an error.
+          return { status: 200, body: { ok: true, skipped: true } };
+        }
+
+        const result = await processMessage(ctx, payload);
+        return {
+          status: result.ok ? 200 : 500,
+          body: result.ok ? { ok: true } : { ok: false, error: result.error },
+        };
       },
     },
   ],
@@ -50,26 +59,30 @@ module.exports = definePlugin({
 module.exports.processMessage = processMessage;
 
 /**
- * `deps` lets tests inject a fake MCP session factory / orchestrator without a live IMAP or MCP
- * server; production call sites (the job handler above) rely on the real defaults.
+ * `deps` lets tests inject a fake MCP session factory / orchestrator without a live TREK server;
+ * production call sites (the route handler above) rely on the real defaults. Returns `{ ok, error }`
+ * so the route handler can choose an HTTP status (a non-2xx response makes Resend retry delivery —
+ * there's no polling loop to retry on anymore, so this is now the only retry mechanism).
  */
 async function processMessage(
   ctx,
-  connection,
-  message,
+  payload,
   { createSession: createSessionFn = createSession, buildTripForMessage: buildTripFn = buildTripForMessage } = {}
 ) {
+  const emailId = payload.data && payload.data.email_id;
+  const messageId = (payload.data && payload.data.headers && payload.data.headers['message-id']) || emailId;
+
   try {
-    const icsText = await extractCalendar(message.source);
+    const icsText = await extractCalendar(payload, ctx.config);
     if (!icsText) {
-      ctx.log.info(`poll-inbox: uid=${message.uid} has no calendar part, skipping`);
-      return;
+      ctx.log.info(`resend-webhook: email_id=${emailId} has no calendar attachment, skipping`);
+      return { ok: true };
     }
 
     const events = parseEvents(icsText);
     if (!events.length) {
-      ctx.log.info(`poll-inbox: uid=${message.uid} calendar has no VEVENTs, skipping`);
-      return;
+      ctx.log.info(`resend-webhook: email_id=${emailId} calendar has no VEVENTs, skipping`);
+      return { ok: true };
     }
 
     const classifiedEvents = events.map((event) => classifyEvent(event));
@@ -81,13 +94,12 @@ async function processMessage(
       if (entry && entry.status === 'done') {
         await ledger.markCancelled(ctx, entry.uid);
         ctx.log.info(
-          `poll-inbox: uid=${message.uid} invite cancelled; trip ${entry.trip_id} left as-is, ledger marked cancelled`
+          `resend-webhook: email_id=${emailId} invite cancelled; trip ${entry.trip_id} left as-is, ledger marked cancelled`
         );
       } else {
-        ctx.log.info(`poll-inbox: uid=${message.uid} all events cancelled, no prior trip, skipping`);
+        ctx.log.info(`resend-webhook: email_id=${emailId} all events cancelled, no prior trip, skipping`);
       }
-      await markProcessed(connection, ctx.config, message.uid, ctx.log);
-      return;
+      return { ok: true };
     }
 
     const maxSequence = Math.max(...activeEvents.map(({ event }) => event.sequence || 0));
@@ -96,51 +108,51 @@ async function processMessage(
     if (entry && entry.status === 'done') {
       if (maxSequence > entry.sequence || payloadHash !== entry.payload_hash) {
         ctx.log.warn(
-          `poll-inbox: uid=${message.uid} invite re-sent with changed content/sequence; ` +
+          `resend-webhook: email_id=${emailId} invite re-sent with changed content/sequence; ` +
             `trip ${entry.trip_id} may need manual reconciliation (no auto-update in this milestone)`
         );
         await ledger.markDone(ctx, entry.uid, { sequence: maxSequence, payloadHash });
       }
-      await markProcessed(connection, ctx.config, message.uid, ctx.log);
-      return;
+      return { ok: true };
     }
 
     if (entry && entry.status === 'cancelled') {
-      await markProcessed(connection, ctx.config, message.uid, ctx.log);
-      return;
+      return { ok: true };
     }
 
     // entry is undefined, or status is 'in_progress'/'error' — new build or crash-recovery resume.
     const existingTripId = entry && entry.trip_id ? entry.trip_id : null;
     await ledger.beginProcessing(ctx, {
       uid: key,
-      messageId: message.messageId,
+      messageId,
       sequence: maxSequence,
       payloadHash,
     });
 
     try {
       const session = await createSessionFn(ctx.config);
-      const result = await buildTripFn(session, message, classifiedEvents, ctx.config, {
+      const result = await buildTripFn(session, payload, classifiedEvents, ctx.config, {
         existingTripId,
         onTripCreated: (tripId) => ledger.recordTripCreated(ctx, key, tripId),
       });
       await ledger.markDone(ctx, key, { tripId: result.tripId, shareUrl: result.shareUrl });
       ctx.log.info(
-        `poll-inbox: uid=${message.uid} built trip ${result.tripId} (${result.entityCount} entries)` +
+        `resend-webhook: email_id=${emailId} built trip ${result.tripId} (${result.entityCount} entries)` +
           (result.shareUrl ? ` share=${result.shareUrl}` : '')
       );
       for (const traceEntry of result.trace) {
         if (!traceEntry.ok) {
-          ctx.log.warn(`poll-inbox: uid=${message.uid} ${traceEntry.step}: ${traceEntry.error}`);
+          ctx.log.warn(`resend-webhook: email_id=${emailId} ${traceEntry.step}: ${traceEntry.error}`);
         }
       }
-      await markProcessed(connection, ctx.config, message.uid, ctx.log);
+      return { ok: true };
     } catch (err) {
       await ledger.markError(ctx, key);
-      ctx.log.error(`poll-inbox: uid=${message.uid} failed, will retry next poll: ${err.message}`);
+      ctx.log.error(`resend-webhook: email_id=${emailId} failed, will retry on next Resend delivery: ${err.message}`);
+      return { ok: false, error: err.message };
     }
   } catch (err) {
-    ctx.log.error(`poll-inbox: uid=${message.uid} failed, skipping: ${err.message}`);
+    ctx.log.error(`resend-webhook: email_id=${emailId} failed, skipping: ${err.message}`);
+    return { ok: false, error: err.message };
   }
 }

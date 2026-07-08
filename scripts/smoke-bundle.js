@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
  * `npm install` and only injects `trek-plugin-sdk` (see CLAUDE.md's load-bearing facts), so anything
  * this bundle still `require()`s from a real node_modules tree would fail in production. This runs
  * the built bundle from a scratch directory with NO node_modules other than a stub `trek-plugin-sdk`
- * — a stray unbundled `require('imap-simple')`/`mailparser`/`node-ical` throws MODULE_NOT_FOUND here
+ * — a stray unbundled `require('node-ical')` throws MODULE_NOT_FOUND here
  * exactly as it would inside TREK.
  */
 function main() {
@@ -38,12 +38,13 @@ function main() {
     const checkScript = `
       const plugin = require('./index.js');
       if (typeof plugin.onLoad !== 'function') throw new Error('onLoad is not a function');
-      if (!Array.isArray(plugin.jobs) || plugin.jobs.length !== 1) throw new Error('expected exactly one job');
-      const job = plugin.jobs[0];
-      if (job.id !== 'poll-inbox') throw new Error(\`unexpected job id: \${job.id}\`);
-      if (typeof job.schedule !== 'string' || !job.schedule) throw new Error(\`missing job schedule: \${job.schedule}\`);
-      if (typeof job.handler !== 'function') throw new Error('job.handler is not a function');
-      console.log('[smoke-bundle] bundle loaded cleanly: onLoad + jobs[0]=poll-inbox present');
+      if (!Array.isArray(plugin.routes) || plugin.routes.length !== 1) throw new Error('expected exactly one route');
+      const route = plugin.routes[0];
+      if (route.path !== '/resend-webhook') throw new Error(\`unexpected route path: \${route.path}\`);
+      if (route.method !== 'POST') throw new Error(\`unexpected route method: \${route.method}\`);
+      if (route.auth !== false) throw new Error('expected the webhook route to be public (auth: false)');
+      if (typeof route.handler !== 'function') throw new Error('route.handler is not a function');
+      console.log('[smoke-bundle] bundle loaded cleanly: onLoad + routes[0]=POST /resend-webhook present');
     `;
     execFileSync('node', ['-e', checkScript], { cwd: tmpDir, stdio: 'inherit' });
   } finally {

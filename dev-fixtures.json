@@ -1,6 +1,8 @@
 {
-  "_comment": "This plugin never reads ctx.trips/ctx.users (all trip mutation goes through the MCP server, not ctx — see docs/PLAN.md §3), so there is intentionally no trip/user seed data here. This file only exists so `trek-plugin-sdk dev` has something to load; config seeds nothing beyond the manifest's own settings.",
+  "_comment": "This plugin never reads ctx.trips/ctx.users (all trip mutation goes through the MCP server, not ctx — see docs/PLAN.md §3), so there is intentionally no trip/user seed data here. config.webhook_secret is set so scripts/smoke-dev.js can exercise the /resend-webhook route's auth check locally.",
   "trips": {},
   "users": {},
-  "config": {}
+  "config": {
+    "webhook_secret": "dev-secret"
+  }
 }

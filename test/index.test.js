@@ -6,19 +6,6 @@ const { processMessage } = require('../src/index');
 
 const fixture = (name) => fs.readFileSync(path.join(__dirname, 'fixtures', name), 'utf8');
 
-function rawEmailWithCalendar(icsText) {
-  return [
-    'From: reservations@example.com',
-    'To: family-inbox@example.com',
-    'Subject: Booking',
-    'MIME-Version: 1.0',
-    'Content-Type: text/calendar; charset="UTF-8"; method=REQUEST',
-    'Content-Transfer-Encoding: 7bit',
-    '',
-    icsText,
-  ].join('\r\n');
-}
-
 const GENERIC_ICS = fixture('generic.ics');
 const CANCEL_ICS = fixture('cancel.ics');
 
@@ -78,15 +65,6 @@ function fakeCtx() {
   };
 }
 
-function fakeConnection() {
-  const marked = [];
-  return {
-    marked,
-    addFlags: async (uid) => marked.push(uid),
-    moveMessage: async () => {},
-  };
-}
-
 function fakeDeps({ tripId = 'trip_1', shareUrl = null } = {}) {
   const sessionCalls = [];
   return {
@@ -103,84 +81,120 @@ function fakeDeps({ tripId = 'trip_1', shareUrl = null } = {}) {
   };
 }
 
-test('a brand-new invite builds a trip and marks the ledger done + message processed', async () => {
+/**
+ * A minimal Resend `email.received` payload. `processMessage` calls the real `extractCalendar`,
+ * which fetches attachment content over `fetch` — `stubResendFetch` below stubs that out to return
+ * whichever `.ics` fixture text the test cares about, so these ledger/orchestration state-machine
+ * tests don't need to re-mock the Resend attachment-fetch path (covered separately in
+ * test/extract.test.js).
+ */
+function webhookPayload({ emailId = 'email_1' } = {}) {
+  return {
+    type: 'email.received',
+    data: {
+      email_id: emailId,
+      from: 'reservations@example.com',
+      to: ['family-inbox@example.com'],
+      subject: 'Booking',
+      headers: { 'message-id': `<${emailId}@resend.dev>` },
+      attachments: [{ id: 'att_1', filename: 'invite.ics', content_type: 'text/calendar' }],
+    },
+  };
+}
+
+function stubResendFetch(t) {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async (url) => {
+    if (typeof url === 'string' && url.includes('/attachments/')) {
+      return new Response(JSON.stringify({ download_url: 'https://files.example.com/att_1' }), { status: 200 });
+    }
+    if (url === 'https://files.example.com/att_1') {
+      return new Response(stubResendFetch.currentIcsText, { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  };
+}
+
+test('a brand-new invite builds a trip and marks the ledger done', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = fakeDeps({ tripId: 'trip_new' });
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
 
-  await processMessage(ctx, connection, { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) }, deps);
+  const result = await processMessage(ctx, webhookPayload(), deps);
 
+  assert.equal(result.ok, true);
   assert.equal(deps.calls.length, 1);
   assert.equal(deps.calls[0].existingTripId, null);
-  assert.deepEqual(connection.marked, [1]);
   const [row] = [...ctx._rows.values()];
   assert.equal(row.status, 'done');
   assert.equal(row.trip_id, 'trip_new');
 });
 
-test('re-polling an unchanged already-done invite is a no-op: no new MCP calls', async () => {
+test('re-delivering an unchanged already-done invite is a no-op: no new MCP calls', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = fakeDeps({ tripId: 'trip_done' });
-  const message = { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) };
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
+  const payload = webhookPayload();
 
-  await processMessage(ctx, connection, message, deps);
-  await processMessage(ctx, connection, message, deps);
+  await processMessage(ctx, payload, deps);
+  await processMessage(ctx, payload, deps);
 
   assert.equal(deps.calls.length, 1, 'buildTripForMessage should only be called once');
-  assert.deepEqual(connection.marked, [1, 1]);
 });
 
-test('a sequence-bumped re-send logs a warning and does not call the MCP builder again', async () => {
+test('a sequence-bumped re-send logs a warning and does not call the MCP builder again', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = fakeDeps({ tripId: 'trip_done' });
-  const message = { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) };
-  await processMessage(ctx, connection, message, deps);
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
+  await processMessage(ctx, webhookPayload({ emailId: 'email_1' }), deps);
 
   const bumpedIcs = GENERIC_ICS.replace('SEQUENCE:0', 'SEQUENCE:1');
-  await processMessage(ctx, connection, { uid: 2, source: rawEmailWithCalendar(bumpedIcs) }, deps);
+  stubResendFetch.currentIcsText = bumpedIcs;
+  await processMessage(ctx, webhookPayload({ emailId: 'email_2' }), deps);
 
   assert.equal(deps.calls.length, 1, 'no new create_trip/build call on a detected update');
   assert.ok(ctx.logs.warn.some((m) => /re-sent with changed content\/sequence/.test(m)));
 });
 
-test('an all-cancelled invite after a prior done trip marks the ledger cancelled', async () => {
+test('an all-cancelled invite after a prior done trip marks the ledger cancelled', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = fakeDeps({ tripId: 'trip_done' });
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
 
-  await processMessage(
-    ctx,
-    connection,
-    { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) },
-    deps
-  );
+  await processMessage(ctx, webhookPayload({ emailId: 'email_1' }), deps);
 
   const cancelledOfSameUid = CANCEL_ICS.replace(
     'flight-abc123@testairlines.com',
     'dinner-reservation-42@thebistro.com'
   );
-  await processMessage(ctx, connection, { uid: 2, source: rawEmailWithCalendar(cancelledOfSameUid) }, deps);
+  stubResendFetch.currentIcsText = cancelledOfSameUid;
+  await processMessage(ctx, webhookPayload({ emailId: 'email_2' }), deps);
 
   const [row] = [...ctx._rows.values()];
   assert.equal(row.status, 'cancelled');
   assert.equal(deps.calls.length, 1, 'cancellation of an existing trip does not call the MCP builder');
 });
 
-test('an all-cancelled invite with no prior trip is skipped without creating a ledger row', async () => {
+test('an all-cancelled invite with no prior trip is skipped without creating a ledger row', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = fakeDeps();
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = CANCEL_ICS;
 
-  await processMessage(ctx, connection, { uid: 1, source: rawEmailWithCalendar(CANCEL_ICS) }, deps);
+  await processMessage(ctx, webhookPayload(), deps);
 
   assert.equal(deps.calls.length, 0);
   assert.equal(ctx._rows.size, 0);
-  assert.deepEqual(connection.marked, [1]);
 });
 
-test('a stale in_progress row with a stored trip_id resumes without calling create_trip again', async () => {
+test('a stale in_progress row with a stored trip_id resumes without calling create_trip again', async (t) => {
   const ctx = fakeCtx();
   await ctx.db.exec(
     `INSERT INTO processed_invites (uid, message_id, sequence, status, payload_hash, updated_at) VALUES (?, ?, ?, 'in_progress', ?, datetime('now'))`,
@@ -191,10 +205,11 @@ test('a stale in_progress row with a stored trip_id resumes without calling crea
     'dinner-reservation-42@thebistro.com',
   ]);
 
-  const connection = fakeConnection();
   const deps = fakeDeps();
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
 
-  await processMessage(ctx, connection, { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) }, deps);
+  await processMessage(ctx, webhookPayload(), deps);
 
   assert.equal(deps.calls.length, 1);
   assert.equal(deps.calls[0].existingTripId, 'trip_partial');
@@ -203,20 +218,21 @@ test('a stale in_progress row with a stored trip_id resumes without calling crea
   assert.equal(row.trip_id, 'trip_partial');
 });
 
-test('a build failure marks the ledger error and leaves the message unprocessed for retry', async () => {
+test('a build failure marks the ledger error and reports ok:false so the route can 500 (Resend retries)', async (t) => {
   const ctx = fakeCtx();
-  const connection = fakeConnection();
   const deps = {
     createSession: async () => ({ fake: true }),
     buildTripForMessage: async () => {
       throw new Error('create_trip failed');
     },
   };
+  stubResendFetch(t);
+  stubResendFetch.currentIcsText = GENERIC_ICS;
 
-  await processMessage(ctx, connection, { uid: 1, source: rawEmailWithCalendar(GENERIC_ICS) }, deps);
+  const result = await processMessage(ctx, webhookPayload(), deps);
 
+  assert.equal(result.ok, false);
   const [row] = [...ctx._rows.values()];
   assert.equal(row.status, 'error');
-  assert.deepEqual(connection.marked, [], 'message must stay unmarked so it is retried next poll');
-  assert.ok(ctx.logs.error.some((m) => /will retry next poll/.test(m)));
+  assert.ok(ctx.logs.error.some((m) => /will retry on next Resend delivery/.test(m)));
 });

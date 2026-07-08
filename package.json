@@ -18,8 +18,6 @@
     "e2e:mcp": "node scripts/e2e-mcp.js"
   },
   "dependencies": {
-    "imap-simple": "^5.1.0",
-    "mailparser": "^3.9.0",
     "node-ical": "^0.26.0"
   },
   "devDependencies": {

@@ -28,7 +28,7 @@ test('a job-context trip read (no bound user) rejects with RESOURCE_FORBIDDEN ev
   await assert.rejects(ctx.trips.getById(1), /RESOURCE_FORBIDDEN: this call requires an authenticated user context/);
 });
 
-test('processMessage never touches a ctx surface outside db:own, even with a live trip fixture available', async () => {
+test('processMessage never touches a ctx surface outside db:own, even with a live trip fixture available', async (t) => {
   const { ctx, calls } = createMockHost({
     grants: ['db:own'],
     trips: { 1: { members: [42], data: { id: 1 } } },
@@ -36,22 +36,37 @@ test('processMessage never touches a ctx surface outside db:own, even with a liv
   await plugin.onLoad(ctx);
   calls.length = 0;
 
-  const connection = { addFlags: async () => {}, moveMessage: async () => {} };
-  const icsMessage = {
-    uid: 1,
-    source: [
-      'From: reservations@example.com',
-      'To: family-inbox@example.com',
-      'Subject: Booking',
-      'MIME-Version: 1.0',
-      'Content-Type: text/calendar; charset="UTF-8"; method=REQUEST',
-      'Content-Transfer-Encoding: 7bit',
-      '',
-      require('node:fs').readFileSync(require('node:path').join(__dirname, 'fixtures', 'generic.ics'), 'utf8'),
-    ].join('\r\n'),
+  const icsText = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, 'fixtures', 'generic.ics'),
+    'utf8'
+  );
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async (url) => {
+    if (typeof url === 'string' && url.includes('/attachments/')) {
+      return new Response(JSON.stringify({ download_url: 'https://files.example.com/att_1' }), { status: 200 });
+    }
+    if (url === 'https://files.example.com/att_1') {
+      return new Response(icsText, { status: 200 });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
   };
 
-  await processMessage(ctx, connection, icsMessage, {
+  const webhookPayload = {
+    type: 'email.received',
+    data: {
+      email_id: 'email_1',
+      from: 'reservations@example.com',
+      to: ['family-inbox@example.com'],
+      subject: 'Booking',
+      headers: { 'message-id': '<email_1@resend.dev>' },
+      attachments: [{ id: 'att_1', filename: 'invite.ics', content_type: 'text/calendar' }],
+    },
+  };
+
+  await processMessage(ctx, webhookPayload, {
     createSession: async () => ({ fake: true }),
     buildTripForMessage: async (session, message, classifiedEvents, config, opts) => {
       await opts.onTripCreated('trip_1');

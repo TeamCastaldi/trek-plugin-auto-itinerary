@@ -4,11 +4,13 @@ const { spawn } = require('child_process');
 const http = require('http');
 
 /**
- * Smoke-tests `trek-plugin-sdk dev` against the built plugin + dev-fixtures.json. Per docs/PLAN.md
- * §5's corrected "Local run" row: `dev` only calls onLoad and serves plugin.routes — it never runs
- * `jobs` (confirmed by reading the installed SDK's dist/cli/dev.js) — so this only proves the
- * manifest/permissions/onLoad load cleanly under the real SDK, not that poll-inbox executes (that's
- * covered by the processMessage unit/integration tests).
+ * Smoke-tests `trek-plugin-sdk dev` against the built plugin + dev-fixtures.json: confirms
+ * onLoad/manifest/permissions load cleanly under the real SDK, AND — since the ingestion path is
+ * now a `routes` handler rather than a `jobs` handler — actually POSTs a sample Resend
+ * `email.received` payload at `/api/resend-webhook` to prove the route is reachable and rejects a
+ * bad secret. It does not exercise the real Resend attachment-fetch (no network calls are made;
+ * this only checks route wiring/auth, not `extractCalendar`), which is why the request body carries
+ * no attachments and the plugin is expected to log-and-no-op rather than build a trip.
  */
 const PORT = 41317; // fixed, unlikely-used dev port so failures are unambiguous, not a race
 
@@ -19,6 +21,26 @@ function get(url) {
       res.on('data', (chunk) => (body += chunk));
       res.on('end', () => resolve({ status: res.statusCode, body }));
     }).on('error', reject);
+  });
+}
+
+function post(url, jsonBody) {
+  return new Promise((resolve, reject) => {
+    const data = Buffer.from(JSON.stringify(jsonBody));
+    const req = http.request(
+      url,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'content-length': data.length },
+      },
+      (res) => {
+        let body = '';
+        res.on('data', (chunk) => (body += chunk));
+        res.on('end', () => resolve({ status: res.statusCode, body }));
+      }
+    );
+    req.on('error', reject);
+    req.end(data);
   });
 }
 
@@ -63,6 +85,21 @@ async function main() {
       throw new Error(`dashboard did not mention the plugin id — body:\n${body}`);
     }
     console.log('[smoke-dev] dashboard responded 200, no load failure, plugin id present');
+
+    const noOpPayload = { type: 'email.received', data: { email_id: 'smoke_1', attachments: [] } };
+
+    const rejected = await post(`http://localhost:${PORT}/api/resend-webhook?secret=wrong`, noOpPayload);
+    if (rejected.status !== 401) {
+      throw new Error(`expected 401 for a bad webhook secret, got ${rejected.status}: ${rejected.body}`);
+    }
+    console.log('[smoke-dev] /api/resend-webhook rejects a bad secret with 401');
+
+    const accepted = await post(`http://localhost:${PORT}/api/resend-webhook?secret=dev-secret`, noOpPayload);
+    if (accepted.status !== 200) {
+      throw new Error(`expected 200 for a valid webhook secret, got ${accepted.status}: ${accepted.body}`);
+    }
+    console.log('[smoke-dev] /api/resend-webhook accepts a valid secret and processes the payload');
+
     console.log('[smoke-dev] PASS');
   } finally {
     child.kill('SIGTERM');

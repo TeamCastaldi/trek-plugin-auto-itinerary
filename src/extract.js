@@ -1,20 +1,12 @@
-const { simpleParser } = require('mailparser');
+const { extractCalendarFromWebhook } = require('./resend');
 
 /**
- * Parses a raw RFC822 message source and returns the embedded `.ics` calendar text, whether it
- * arrived as a `*.ics` attachment or an inline `text/calendar` part. Returns null if none found.
+ * Given a Resend `email.received` webhook payload and plugin config, returns the embedded `.ics`
+ * calendar text, or null if the message has no calendar attachment. Thin wrapper over
+ * `resend.js` so callers (and tests) keep the same `extractCalendar` entry point IMAP-era code used.
  */
-async function extractCalendar(rawSource) {
-  const mail = await simpleParser(rawSource);
-
-  const part = (mail.attachments || []).find((att) => {
-    const contentType = (att.contentType || '').toLowerCase();
-    const filename = (att.filename || '').toLowerCase();
-    return contentType === 'text/calendar' || filename.endsWith('.ics');
-  });
-
-  if (!part) return null;
-  return part.content.toString('utf8');
+async function extractCalendar(payload, config) {
+  return extractCalendarFromWebhook(payload, config);
 }
 
 module.exports = { extractCalendar };

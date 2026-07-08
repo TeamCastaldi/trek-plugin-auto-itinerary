@@ -1,12 +1,13 @@
 # auto-itinerary
 
-TREK plugin (`type: integration`, no UI) that watches a dedicated family IMAP inbox for business-trip
-calendar invites, parses the `.ics` payload, and builds a live TREK Trip via TREK's built-in MCP server
-— so the family follows along on a public share link without the traveler touching the app.
+TREK plugin (`type: integration`, no UI) that receives a Resend inbound-email webhook for a dedicated
+family inbox's business-trip calendar invites, parses the `.ics` payload, and builds a live TREK Trip
+via TREK's built-in MCP server — so the family follows along on a public share link without the
+traveler touching the app.
 
 Full architecture rationale, verified platform facts, and the detailed per-area design live in
-**`docs/PLAN.md`** — read it before touching manifest permissions, egress, MCP, or IMAP code. This file
-is the concise entry point: workflow, load-bearing gotchas, current TODOs, and version history.
+**`docs/PLAN.md`** — read it before touching manifest permissions, egress, MCP, or webhook code. This
+file is the concise entry point: workflow, load-bearing gotchas, current TODOs, and version history.
 
 ## Workflow
 
@@ -19,7 +20,8 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
 
 - **`ctx.trips` cannot create a trip** — only update one. `create_trip` via MCP is the only way to spawn
   one, independent of any user-context restriction.
-- **`jobs` run with no bound user.** Any `ctx.trips`/`places`/`days` call in a job throws
+- **`jobs`/routes with no bound user** (jobs always; a webhook route runs `auth: false` and so also
+  has no real TREK user). Any `ctx.trips`/`places`/`days` call in either context throws
   `RESOURCE_FORBIDDEN`. All trip mutations must go through the MCP server using a **user-bound**
   `client_credentials` machine token (created in the owning user's Settings → Integrations → MCP, *not*
   the admin panel).
@@ -27,19 +29,31 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
   dependency must be esbuild-bundled into `server/index.js`; only `trek-plugin-sdk` stays external
   (host-injected). Run `npm run build` before `dev`/`pack` (already wired into those npm scripts).
 - **Egress (`http:outbound:<host>` + `egress[]`) is a host-only allowlist**, enforced at the raw
-  `net.Socket.connect` layer — protocol-agnostic, so raw IMAP TLS works, not just HTTP. But loopback and
-  link-local are **always** blocked (SSRF backstop), so the MCP/`oauth` calls must target the public
-  `APP_URL` hostname, never `127.0.0.1`.
+  `net.Socket.connect` layer — protocol-agnostic. But loopback and link-local are **always** blocked
+  (SSRF backstop), so the MCP/`oauth`/Resend-API calls must target public hostnames, never `127.0.0.1`.
 - Directory name (`trek-plugin-auto-itinerary`) not matching manifest `id` (`auto-itinerary`) is only a
   `validate` **warning** — confirmed empirically, not a blocker.
+- **`trek-plugin-sdk`'s `PluginRequest` (route handler's `req`) carries NO request headers** —
+  confirmed against the installed SDK's `dist/index.d.ts` (`{method, path, query, body, user}`, no
+  `headers` key) and its `dev` route dispatcher. A shared webhook secret therefore has to travel in
+  the **query string**, not a header — Resend's webhook URL is configured as
+  `.../resend-webhook?secret=<webhook_secret>`. Also: `trek-plugin-sdk dev` mounts declared routes at
+  `/api<path>`, exact-string path match only (no dynamic segments).
+- **Resend's `email.received` webhook payload carries attachment *metadata* only** (`data.attachments[]`
+  `{id, filename, content_type}`), never inline content — confirmed against Resend's own docs/skills
+  reference, not guessed. Getting the actual `.ics` bytes needs two authenticated follow-up calls back
+  to Resend's API (`GET /emails/receiving/{email_id}/attachments/{attachmentId}` → signed
+  `download_url` → `GET` that URL), which is why `resend_api_key` and `api.resend.com` egress exist as
+  settings/permissions distinct from the inbound webhook itself (`src/resend.js`).
 - **TREK's own job scheduler does not reliably invoke a sideloaded plugin's declared `jobs`** — the
   wiki documents "TREK owns the cron and calls your handler," but on the real family instance
-  (self-hosted, v3.2.1) `poll-inbox` was never invoked automatically across multiple
-  activate/deactivate/restart cycles, with valid, saved config, over 20+ minutes of observation and
-  zero related lines in the container's logs. Root cause is on TREK's side, not fixable in this
-  plugin's code. **Confirmed working interim path:** `scripts/manual-run.js` runs the exact same
-  production code (`onLoad` + the job's `handler`, unmodified) on demand — put it on a **host-level
-  cron** (not TREK's) for real automated ingestion. See README's Setup & Deployment section.
+  (self-hosted, v3.2.1) the old IMAP-polling `poll-inbox` job was never invoked automatically across
+  multiple activate/deactivate/restart cycles, with valid, saved config, over 20+ minutes of
+  observation and zero related lines in the container's logs. Root cause is on TREK's side, not
+  fixable in this plugin's code. **This is why ingestion is a push `routes` handler now, not a `jobs`
+  poller** — a route has no scheduler dependency at all, closing the gap architecturally instead of
+  working around it with a host-level cron. (Historical interim workaround `scripts/manual-run.js` and
+  IMAP polling were removed once the webhook pivot landed — see version history.)
 - **Sideloaded plugins may have no settings UI at all** — confirmed on the real instance: the only
   `...` menu options were Restart/View error logs/Delete, no Configure/Settings. Settings still have
   a real backend home (`GET`/`PUT /api/admin/plugins/:id/config`, confirmed via direct browser
@@ -55,9 +69,9 @@ Route an invite to the correct family member's own TREK account/trip based on wh
 a new secret settings field holding a JSON-encoded routing table (`{match, mcp_client_id,
 mcp_client_secret, mcp_scopes, auto_share}[]` — there's no native array/object settings type, so a
 single JSON-blob `password`-type field is the only option), matched case-insensitive substring
-against `src/imap.js`'s captured `To`/`Cc` headers (mirroring the existing `sender_allowlist`
-convention), first-match-wins, falling back unchanged to the base single-account settings when
-nothing matches (fully backward-compatible for single-account installs).
+against the Resend webhook payload's `data.to`/`data.cc` fields (mirroring the retired IMAP-era
+`sender_allowlist` convention), first-match-wins, falling back unchanged to the base single-account
+settings when nothing matches (fully backward-compatible for single-account installs).
 
 ### TODO M8 — Publish to the community registry (long-term, optional)
 
@@ -82,6 +96,14 @@ other TREK users can install it — not required for our own use:
   a PR) → `submit` (forks `mauriceboe/TREK-Plugins`, commits the entry, opens the PR).
 
 ### TODO M9 (v1.1) — Modular Extraction & Router
+
+**Needs re-scoping post-webhook-pivot:** this was written against the IMAP-era `src/extract.js`
+(raw RFC822 source via `mailparser`). `src/extract.js` is now a thin Resend-webhook-shaped wrapper
+over `src/resend.js`'s `extractCalendarFromWebhook` (attachment metadata → signed `download_url` →
+content fetch). The underlying idea still applies — return the full Resend webhook payload (already
+has `text`/`html` fields per Resend's docs when fetched via `resend.emails.receiving.get()`, falling
+back to those if no `.ics` attachment is found) and add a parser-strategy router — but re-verify the
+exact payload shape available at that point before implementing, same as the rest of this milestone.
 
 Update `src/extract.js` to return the full email payload (falling back to plain text or HTML if no `.ics` is found). Create a new parsing router (`src/parse-router.js`) that iterates through a registry of isolated parser strategies (e.g., `ics`, `amex`, `concur`). The router will ask each strategy `canParse(emailPayload)`, and delegate to the first one that returns true.
 
@@ -266,3 +288,51 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     disregarded, with independent re-verification against the wiki, an unsolicited/unverifiable
     message claiming the opposite architecture (plugins must self-schedule via `setInterval`) —
     treated as an unreliable source rather than acted on.
+  - **Architecture pivot — IMAP polling → Resend push webhook**: replaced the entire ingestion layer
+    to close the scheduler gap above architecturally instead of working around it. Deleted
+    `src/imap.js`, `scripts/smoke-imap.js`, `scripts/manual-run.js`, `test/imap.test.js`, and the
+    `imap-simple`/`mailparser` dependencies; removed the `jobs: [poll-inbox]` array from
+    `src/index.js` in favor of a `routes: [{ method: 'POST', path: '/resend-webhook', auth: false,
+    handler }]` entry — confirmed against the installed `trek-plugin-sdk@1.3.1`'s real
+    `PluginRoute`/`PluginRequest` types (not guessed) that `auth: false` is the documented, first-class
+    way to expose a public route for exactly this use case (OAuth callbacks/webhooks). `processMessage`
+    (`src/index.js`) now takes `(ctx, payload, deps)` instead of `(ctx, connection, message, deps)` —
+    no more IMAP flag-marking step, since the `processed_invites` ledger was always the authoritative
+    idempotency guard, not the mail flags — and returns `{ ok, error }` so the route handler can pick
+    an HTTP status: a non-2xx response is now the *only* retry signal (Resend retries failed webhook
+    deliveries), since there's no polling loop to retry on anymore.
+
+    Two live-verified facts materially shaped the design, neither assumed: (1) `trek-plugin-sdk`'s
+    `PluginRequest` has no `headers` field at all (checked the installed SDK's `dist/index.d.ts` and
+    `dist/cli/dev.js`'s route dispatcher directly) — so the shared `webhook_secret` travels as a
+    `?secret=` query parameter, not a header, and `src/resend.js`'s `verifyWebhookSecret` reads
+    `req.query.secret` accordingly (constant-time compare). (2) Resend's `email.received` webhook
+    payload carries attachment **metadata only** (`data.attachments[].{id, filename, content_type}`),
+    never inline content (confirmed via Resend's own docs/skills reference, not assumed from the task
+    brief, which had assumed inline content) — so `src/resend.js`'s `extractCalendarFromWebhook` does
+    the real two-hop fetch: `GET /emails/receiving/{email_id}/attachments/{attachmentId}` for a signed
+    `download_url`, then `GET`s that URL for the `.ics` bytes. This needs a new `resend_api_key`
+    secret setting and `api.resend.com` egress, on top of the `webhook_secret` setting — surfaced to
+    the user via `AskUserQuestion` before implementing, since it materially expanded the settings/
+    egress surface beyond the original task description. `src/extract.js` is now a thin wrapper over
+    `src/resend.js` to keep the same `extractCalendar(payload, config)` call shape `src/index.js` and
+    the ledger/orchestration layer already expected — `src/mcp/orchestrate.js` needed zero changes,
+    since it never actually read its `message` parameter (confirmed by grep before relying on it).
+
+    `trek-plugin.template.json`: removed all `imap_*`/`processed_folder`/`sender_allowlist` settings,
+    added `webhook_secret` and `resend_api_key` (both `password`/`secret: true`). Rewrote
+    `test/extract.test.js`/`test/index.test.js`/`test/mcp-integration.test.js`/`test/permissions.test.js`
+    around the new payload shape and a stubbed `global.fetch` (passthrough to the real `fetch` for
+    non-Resend URLs, so the MCP integration test's real HTTP mock server call still works); added
+    `test/resend.test.js` for `verifyWebhookSecret`. Updated `scripts/smoke-bundle.js`'s bundle-shape
+    assertion from `jobs[0]=poll-inbox` to `routes[0]=POST /resend-webhook, auth:false`, and extended
+    `scripts/smoke-dev.js` to actually POST a sample webhook payload at a live local `trek-plugin-sdk
+    dev` instance (confirming a bad `secret` 401s and a valid one 200s) — a real functional smoke test
+    that wasn't possible for the old `jobs`-based pipeline, since `dev` never invoked `jobs` at all.
+    73 total tests, all green; `npm run validate`/`pack` both clean with `EGRESS_HOSTS=api.resend.com,
+    <trek-host>`. TODO M7 (multi-account routing) and M9 (modular parser router) updated to reference
+    the new webhook payload shape instead of the deleted `src/imap.js`. **Not yet verified**: whether
+    the signed `download_url` host actually resolves under `api.resend.com` or a separate host (would
+    need another egress entry) — flagged in the README/manifest hint as a follow-up to confirm against
+    a live Resend delivery, matching this project's established convention of marking unverified
+    external-API assumptions explicitly rather than silently guessing.

@@ -97,28 +97,42 @@ function fakeCtx() {
   };
 }
 
-function fakeConnection() {
-  const marked = [];
-  return { marked, addFlags: async (uid) => marked.push(uid), moveMessage: async () => {} };
+function stubResendFetch(t, icsText) {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  global.fetch = async (url, ...rest) => {
+    if (typeof url === 'string' && url.includes('/attachments/')) {
+      return new Response(JSON.stringify({ download_url: 'https://files.example.com/att_1' }), { status: 200 });
+    }
+    if (url === 'https://files.example.com/att_1') {
+      return new Response(icsText, { status: 200 });
+    }
+    // Anything else (the mock TREK server's /oauth/token and /mcp) goes through the real fetch.
+    return originalFetch(url, ...rest);
+  };
 }
 
-function flightMessage() {
-  const ics = fs.readFileSync(path.join(__dirname, 'fixtures', 'flight.ics'), 'utf8');
-  const source = [
-    'From: reservations@testairlines.com',
-    'To: family-inbox@example.com',
-    'Subject: Flight confirmation',
-    'MIME-Version: 1.0',
-    'Content-Type: text/calendar; charset="UTF-8"; method=REQUEST',
-    'Content-Transfer-Encoding: 7bit',
-    '',
-    ics,
-  ].join('\r\n');
-  return { uid: 1, messageId: '<flight-1@testairlines.com>', source };
+function flightWebhookPayload() {
+  return {
+    type: 'email.received',
+    data: {
+      email_id: 'email_flight_1',
+      from: 'reservations@testairlines.com',
+      to: ['family-inbox@example.com'],
+      subject: 'Flight confirmation',
+      headers: { 'message-id': '<flight-1@testairlines.com>' },
+      attachments: [{ id: 'att_1', filename: 'invite.ics', content_type: 'text/calendar' }],
+    },
+  };
 }
 
-test('processMessage builds a trip end-to-end against a real HTTP mock TREK server', async () => {
+test('processMessage builds a trip end-to-end against a real HTTP mock TREK server', async (t) => {
   _resetTokenCacheForTests();
+  const flightIcs = fs.readFileSync(path.join(__dirname, 'fixtures', 'flight.ics'), 'utf8');
+  stubResendFetch(t, flightIcs);
+
   const server = await startMockTrekServer({
     tokenHandler: (_entry, res) => sendJson(res, 200, { access_token: 'trekoa_test', expires_in: 3600 }),
     mcpHandler: mcpJsonRpcRouter({
@@ -139,16 +153,15 @@ test('processMessage builds a trip end-to-end against a real HTTP mock TREK serv
       mcp_scopes: 'trips:write places:write reservations:write trips:share',
       auto_share: 'yes',
     };
-    const connection = fakeConnection();
-    const message = flightMessage();
+    const payload = flightWebhookPayload();
 
-    await processMessage(ctx, connection, message);
+    const result = await processMessage(ctx, payload);
+    assert.equal(result.ok, true);
 
     const [row] = [...ctx._rows.values()];
     assert.equal(row.status, 'done');
     assert.equal(row.trip_id, 'trip_int_1');
     assert.equal(row.share_url, 'https://trek.example.com/share/abc');
-    assert.deepEqual(connection.marked, [1]);
 
     const mcpCalls = server.requestLog
       .filter((entry) => entry.path === '/mcp')
@@ -166,11 +179,11 @@ test('processMessage builds a trip end-to-end against a real HTTP mock TREK serv
 
     const mcpRequestCountAfterFirstRun = server.requestLog.filter((entry) => entry.path === '/mcp').length;
 
-    // Re-polling the same already-done invite must be a no-op: no new /mcp traffic at all.
-    await processMessage(ctx, connection, message);
+    // Re-delivering the same already-done invite must be a no-op: no new /mcp traffic at all.
+    const secondResult = await processMessage(ctx, payload);
+    assert.equal(secondResult.ok, true);
     const mcpRequestCountAfterSecondRun = server.requestLog.filter((entry) => entry.path === '/mcp').length;
     assert.equal(mcpRequestCountAfterSecondRun, mcpRequestCountAfterFirstRun);
-    assert.deepEqual(connection.marked, [1, 1]);
   } finally {
     await server.close();
   }
