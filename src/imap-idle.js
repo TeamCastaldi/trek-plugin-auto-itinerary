@@ -28,9 +28,12 @@ function addJitter(ms) {
  * @param {Object} config - IMAP config (imap_host, imap_port, imap_user, etc.)
  * @param {Object} callbacks - { onMail(uid, messageId), onError(err) }
  * @param {Object} log - Logger with .info, .warn, .error methods
+ * @param {Object} deps - Optional { openConnectionFn, getUnderlyingImapFn } for testing
  * @returns {Object} listener with { start(), stop(), isConnected(), getState() }
  */
-function createIdleListener(config, callbacks, log) {
+function createIdleListener(config, callbacks, log, deps = {}) {
+  const openConnectionFn = deps.openConnectionFn || openConnection;
+  const getUnderlyingImapFn = deps.getUnderlyingImapFn || getUnderlyingImap;
   let connection = null;
   let state = STATE.DISCONNECTED;
   let idleAbort = null;
@@ -50,13 +53,14 @@ function createIdleListener(config, callbacks, log) {
       setState(STATE.CONNECTING);
       log.info('imap-idle: opening connection...');
 
-      connection = await openConnection(config);
-      const imapConn = getUnderlyingImap(connection);
+      connection = await openConnectionFn(config);
+      const imapConn = getUnderlyingImapFn(connection);
 
       // Check if server supports IDLE
       if (!imapConn.serverCapabilities.includes('IDLE')) {
         log.warn('imap-idle: server does not support IDLE, falling back to polling');
-        setState(STATE.CONNECTED);
+        closeConnection();
+        setState(STATE.DISCONNECTED);
         return false;
       }
 
@@ -83,7 +87,10 @@ function createIdleListener(config, callbacks, log) {
       imapConn.on('close', () => {
         log.warn('imap-idle: connection closed by server');
         setState(STATE.DISCONNECTED);
-        _scheduleReconnect();
+        // Only reconnect if listener is still active (not in stop sequence)
+        if (mailHandler) {
+          _scheduleReconnect();
+        }
       });
 
       imapConn.on('end', () => {
@@ -108,6 +115,7 @@ function createIdleListener(config, callbacks, log) {
       return true;
     } catch (err) {
       log.error(`imap-idle: failed to start IDLE: ${err.message}`);
+      closeConnection();
       setState(STATE.DISCONNECTED);
       return false;
     }
@@ -168,6 +176,9 @@ function createIdleListener(config, callbacks, log) {
     stop() {
       log.info('imap-idle: stopping listener...');
 
+      // Clear mailHandler immediately to prevent any pending events from triggering reconnect
+      mailHandler = null;
+
       // Clear any pending reconnect
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
@@ -177,11 +188,11 @@ function createIdleListener(config, callbacks, log) {
       // Close connection gracefully
       if (connection) {
         try {
-          const imapConn = getUnderlyingImap(connection);
-          if (imapConn.state === 'idle') {
+          const imapConn = getUnderlyingImapFn(connection);
+          if (imapConn.state === 'idle' && typeof imapConn.idleDone === 'function') {
             // Exit IDLE mode before closing
-            imapConn.closebox((err) => {
-              if (err) log.warn(`imap-idle: error closing mailbox: ${err.message}`);
+            imapConn.idleDone((err) => {
+              if (err) log.warn(`imap-idle: error exiting IDLE: ${err.message}`);
             });
           }
         } catch (err) {
@@ -192,7 +203,6 @@ function createIdleListener(config, callbacks, log) {
       }
 
       setState(STATE.DISCONNECTED);
-      mailHandler = null;
       log.info('imap-idle: listener stopped');
     },
 

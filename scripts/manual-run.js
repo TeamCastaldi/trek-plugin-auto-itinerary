@@ -99,6 +99,11 @@ async function main() {
     console.log('[manual-run] onLoad complete, running poll-inbox handler for real...');
     await plugin.jobs[0].handler(ctx);
     console.log('[manual-run] poll-inbox handler completed.');
+
+    // Shut down the IDLE listener so background sockets don't keep the process alive
+    const { shutdownIdleMonitor } = require('../src/imap-monitor');
+    await shutdownIdleMonitor();
+    console.log('[manual-run] IDLE monitor shut down.');
   } finally {
     close();
   }

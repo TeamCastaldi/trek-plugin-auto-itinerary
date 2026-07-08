@@ -5,6 +5,7 @@ const { createIdleListener } = require('./imap-idle');
 
 let idleListener = null;
 let activeContext = null;
+let mailHandlerInFlight = false;
 
 /**
  * Initialize the IMAP IDLE monitor on plugin startup.
@@ -12,9 +13,14 @@ let activeContext = null;
  *
  * @param {Object} ctx - Plugin context with config, db, log, etc.
  * @param {Function} processMessageFn - Message handler (from src/index.js)
+ * @param {Object} deps - Optional { createIdleListenerFn } for testing
  * @returns {Promise<void>}
  */
-async function initializeIdleMonitor(ctx, processMessageFn) {
+async function initializeIdleMonitor(ctx, processMessageFn, deps = {}) {
+  if (!processMessageFn || typeof processMessageFn !== 'function') {
+    throw new Error('imap-monitor: processMessageFn is required and must be a function');
+  }
+
   if (idleListener) {
     ctx.log.warn('imap-monitor: already initialized');
     return;
@@ -28,10 +34,18 @@ async function initializeIdleMonitor(ctx, processMessageFn) {
     },
   };
 
-  idleListener = createIdleListener(ctx.config, callbacks, ctx.log);
+  const createIdleListenerFn = deps.createIdleListenerFn || createIdleListener;
+  idleListener = createIdleListenerFn(ctx.config, callbacks, ctx.log);
 
   // Create mail handler that fetches message and processes it
   const mailHandler = async () => {
+    // Guard against concurrent invocations (bursty mail delivery)
+    if (mailHandlerInFlight) {
+      ctx.log.info('imap-monitor: mail handler already in flight, skipping concurrent invocation');
+      return;
+    }
+
+    mailHandlerInFlight = true;
     try {
       // When mail event fires, re-search for UNSEEN messages
       // (simpler than trying to extract the specific UID from the event)
@@ -54,6 +68,8 @@ async function initializeIdleMonitor(ctx, processMessageFn) {
       }
     } catch (err) {
       ctx.log.error(`imap-monitor: mail handler failed: ${err.message}`);
+    } finally {
+      mailHandlerInFlight = false;
     }
   };
 
@@ -74,6 +90,7 @@ async function shutdownIdleMonitor() {
   }
 
   activeContext = null;
+  mailHandlerInFlight = false;
 }
 
 /**
