@@ -38,6 +38,7 @@ calendars.
 | 5 | Pack deps into the zip (vendored `node_modules`) | `pack` **strips `node_modules`** and TREK **never runs `npm install`**. Third-party deps must be **bundled** into `server/` (e.g. esbuild → CommonJS). `trek-plugin-sdk` must stay a **devDependency, marked external** (injected at runtime). | Build step = bundler; "vendor" means "inline into `server/`". |
 | 6 | Transport creation is under trips | `create_transport` requires **`reservations:write`**, not `trips:write`. | Scope set must include `reservations:write`. |
 | 7 | `http:outbound` covers IMAP + "local MCP loopback" | **Egress is a HOST-ONLY allowlist** (hostnames/`*.wildcards` only — no ports, so `mailhost:993` is inexpressible; protocol never stated in docs, later confirmed protocol-agnostic from source — see R1). **Loopback (`127.0.0.1`/`::1`) and link-local are ALWAYS blocked by an SSRF backstop, even when allow-listed** (`ALLOW_INTERNAL_NETWORK=true` only relaxes RFC-1918, and only for "integrations" — plugins not named). So the MCP call **cannot target `127.0.0.1`** — it must use the public `APP_URL` host. See R1/R1a. | Both ingestion and MCP reachability had to be reworked vs the brief. |
+| 8 | Once activated, TREK's scheduler automatically invokes a sideloaded plugin's declared `jobs` — per the wiki, "TREK owns the cron and calls your handler" | **Empirically false on at least one real self-hosted instance** (v3.2.1): across multiple activate/deactivate/Restart cycles, with valid saved settings, `poll-inbox` was never invoked — confirmed via a live docker-logs tail (`--since 20m`) showing zero scheduler/plugin activity while an untouched UNSEEN test message sat waiting. Root cause is server-side; not something this plugin's code can fix. Also found along the way: this instance's admin UI had **no settings screen at all** for the sideloaded plugin (only Restart/Error log/Delete) — settings had to be set directly via `PUT /api/admin/plugins/:id/config` (flat body; the `{ config: {...} }` wrapper only appears on `GET` reads, not expected on write). See R5. | `scripts/manual-run.js` (real `onLoad`+job `handler`, unmodified) on a **host-level cron** is the confirmed-working interim path — see README's Setup & Deployment step 4. |
 
 ---
 
@@ -349,6 +350,14 @@ Two earlier throwaway/broken trips from mid-fix debugging (ids 3 and 4) plus the
   **public share link**, not membership.
 - **R3:** `create_place` may need coordinates vs a name string — read the live `inputSchema` (`tools/list`).
 - **R4:** `.ics` variety (recurring `RRULE`, all-day, timezones) — cover in fixtures.
+- **R5 (OPEN, platform-side — confirmed 2026-07-07):** TREK's job scheduler did not invoke this
+  sideloaded plugin's `poll-inbox` job at all on a real self-hosted v3.2.1 instance, contradicting
+  the wiki's documented "TREK owns the cron" behavior — see corrections table row 8. Unknown whether
+  this is sideload-specific (vs. registry-installed plugins), version-specific, or a general bug;
+  not something reproducible/fixable from this repo. Interim mitigation shipped:
+  `scripts/manual-run.js` + a host-level cron entry (documented in README). If this is ever resolved
+  upstream, or confirmed to only affect sideloads, revisit whether the host-cron workaround is still
+  needed for a from-the-registry install.
 
 ## Decisions (locked)
 

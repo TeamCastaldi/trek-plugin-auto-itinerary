@@ -32,6 +32,19 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
   `APP_URL` hostname, never `127.0.0.1`.
 - Directory name (`trek-plugin-auto-itinerary`) not matching manifest `id` (`auto-itinerary`) is only a
   `validate` **warning** — confirmed empirically, not a blocker.
+- **TREK's own job scheduler does not reliably invoke a sideloaded plugin's declared `jobs`** — the
+  wiki documents "TREK owns the cron and calls your handler," but on the real family instance
+  (self-hosted, v3.2.1) `poll-inbox` was never invoked automatically across multiple
+  activate/deactivate/restart cycles, with valid, saved config, over 20+ minutes of observation and
+  zero related lines in the container's logs. Root cause is on TREK's side, not fixable in this
+  plugin's code. **Confirmed working interim path:** `scripts/manual-run.js` runs the exact same
+  production code (`onLoad` + the job's `handler`, unmodified) on demand — put it on a **host-level
+  cron** (not TREK's) for real automated ingestion. See README's Setup & Deployment section.
+- **Sideloaded plugins may have no settings UI at all** — confirmed on the real instance: the only
+  `...` menu options were Restart/View error logs/Delete, no Configure/Settings. Settings still have
+  a real backend home (`GET`/`PUT /api/admin/plugins/:id/config`, confirmed via direct browser
+  `fetch()` calls) — the API wraps the stored value in `{ config: {...} }` on read, but `PUT` expects
+  the flat settings object as the body directly (not re-wrapped), storing it as-is.
 
 ## Open TODOs
 
@@ -232,3 +245,24 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     manually, settings configured. This is the complete deployment path for private/single-account
     use — see README's Setup & Deployment section. Split TODO M8 (previously "Package, sign, publish") into
     this now-done short-term path and a long-term-only "publish to the community registry" TODO.
+  - **Live end-to-end mail test + TREK scheduler investigation** (2026-07-07): sent a real external
+    test email (with a real `.ics` attachment) to the monitored mailbox and found it was never
+    ingested. Root-caused through a full diagnostic pass: confirmed IMAP connectivity/credentials
+    were correct throughout (`scripts/smoke-imap.js`, after fixing it — see below); discovered the
+    sideloaded plugin had **no settings UI** at all (only Restart/Error log/Delete in its menu), so
+    `ctx.config` had been empty since install; configured real settings via direct
+    `PUT /api/admin/plugins/auto-itinerary/config` calls (confirming the API's request/response
+    wrapping asymmetry, documented above); then, even with valid config and a Restart, TREK's own
+    cron still never invoked `poll-inbox` (re-confirmed with a second, untouched test email and a
+    live docker-logs tail showing zero plugin/scheduler activity) — a platform-level gap, not
+    something in this plugin's code. Along the way: fixed `scripts/smoke-imap.js`, which had rotted
+    since M4's `src/imap.js` refactor and crashed immediately (`fetchUnseenMessages` no longer
+    exists — replaced with `openConnection`/`searchUnseen`); added `scripts/manual-run.js`, which
+    runs the real, unmodified `onLoad` + job `handler` (pulled directly off `src/index.js`'s
+    exports) against a real mailbox/TREK instance, backed by a real `node:sqlite` ledger for correct
+    idempotency — used to prove the pipeline itself works perfectly (built a real trip end-to-end
+    from a genuine external email) independent of TREK's scheduler, and is now the documented
+    interim path to real automation via a host-level cron entry (see README). Also fielded and
+    disregarded, with independent re-verification against the wiki, an unsolicited/unverifiable
+    message claiming the opposite architecture (plugins must self-schedule via `setInterval`) —
+    treated as an unreliable source rather than acted on.

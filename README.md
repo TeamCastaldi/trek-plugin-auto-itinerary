@@ -13,9 +13,12 @@ share link without the traveler ever opening the app.
 instance — IMAP ingestion, `.ics` parsing, MCP trip-building (`create_trip` →
 `create_and_assign_place` → `create_accommodation`/`create_transport`/`create_reservation` →
 optional `create_share_link`), and the idempotency ledger (one trip per invite, update detection,
-cancellation handling). Today every trip is built under **one** TREK account (whichever user owns
-the configured MCP machine client) — per-family-member routing to separate accounts is planned
-(see the project plan for the milestone breakdown).
+cancellation handling), including with genuine external test emails. Today every trip is built
+under **one** TREK account (whichever user owns the configured MCP machine client) —
+per-family-member routing to separate accounts is planned (see the project plan for the milestone
+breakdown). **Known gap:** on at least one real self-hosted instance, TREK's own scheduler never
+invoked the plugin's `poll-inbox` job automatically — see step 4 of Setup & Deployment below for
+the confirmed-working host-cron alternative.
 
 ## Permissions
 
@@ -60,11 +63,35 @@ upload.
    needed for a sideloaded install**, that only matters for the public-registry path below. The
    plugin lands **inactive** and tagged **"Sideloaded"** (auto-updates are disabled for sideloaded
    plugins — a new version means repeating steps 1–2 and re-uploading by hand).
-3. **Activate it**, then fill in the instance settings on its settings screen: IMAP
-   host/port/security/username/password/folder, an optional sender allowlist, the TREK instance's
-   public base URL, and an MCP machine client's `client_id`/`client_secret` (create one under
-   **Settings → Integrations → MCP → OAuth Clients → Machine client**, with scopes
-   `trips:write places:write reservations:write trips:share`).
+3. **Activate it**, then configure the instance settings: IMAP host/port/security/username/
+   password/folder, an optional sender allowlist, the TREK instance's public base URL, and an MCP
+   machine client's `client_id`/`client_secret` (create one under **Settings → Integrations → MCP →
+   OAuth Clients → Machine client**, with scopes `trips:write places:write reservations:write
+   trips:share`).
+
+   **If there's no settings UI for the plugin** (confirmed missing in at least one real TREK
+   admin panel — the `...` menu only had Restart/View error logs/Delete): the settings still have a
+   real backend home at `GET`/`PUT /api/admin/plugins/auto-itinerary/config`. Configure them
+   directly from your browser's DevTools Console while logged in as an admin (so your session
+   cookie is used) — `GET` first to see the current/expected shape, then `PUT` the flat settings
+   object as the body (the API wraps the *stored* value in `{ config: {...} }` on read, but does
+   **not** expect you to wrap it yourself on write — sending an already-wrapped body just double-nests
+   it):
+   ```js
+   fetch('/api/admin/plugins/auto-itinerary/config', {
+     method: 'PUT',
+     headers: { 'content-type': 'application/json' },
+     body: JSON.stringify({
+       imap_host: 'imap.gmail.com', imap_port: 993, imap_tls: 'tls',
+       imap_user: 'you@example.com', imap_password: '...',
+       trek_base_url: 'https://trek.example.com',
+       mcp_client_id: '...', mcp_client_secret: '...',
+       mcp_scopes: 'trips:write places:write reservations:write trips:share',
+       auto_share: 'yes',
+     }),
+   }).then(r => r.json()).then(console.log)
+   ```
+   Then use **Restart** (from the plugin's `...` menu) to make it reload with the new config.
 
    For a Google Workspace "alternate email" mailbox: `imap_host = imap.gmail.com`, `imap_port = 993`,
    `imap_tls = tls`. Since this plugin authenticates via plain IMAP basic auth (not OAuth2/XOAUTH2),
@@ -81,9 +108,24 @@ upload.
    primary account is what this plugin logs into IMAP as. Confirmed empirically: authenticating as the
    alternate address fails, authenticating as the primary account succeeds and sees the alternate
    address's mail.
-4. The `poll-inbox` job runs on its own schedule (every 5 minutes) once activated — no further action
-   needed. Every trip it builds is owned by whichever TREK user created the machine client in step 3;
-   there's no per-family-member routing yet (planned, see the project plan).
+4. **`poll-inbox` is declared to run every 5 minutes once activated, but confirm this actually
+   happens on your instance before relying on it.** On the real family instance (self-hosted TREK
+   v3.2.1), the plugin's job was never invoked by TREK's own scheduler at all — confirmed via
+   multiple activate/deactivate/Restart cycles, valid saved settings, and a live docker-logs tail
+   showing zero scheduler/plugin activity over 20+ minutes. This is a platform-level gap, not
+   something this plugin's code can fix. **If the same thing happens to you**, run the pipeline via
+   a **host-level cron** instead of relying on TREK's:
+   ```cron
+   */5 * * * * cd /path/to/trek-plugin-auto-itinerary && IMAP_HOST=imap.gmail.com IMAP_PORT=993 IMAP_TLS=tls IMAP_USER=you@example.com IMAP_PASSWORD="..." TREK_BASE_URL=https://trek.example.com MCP_CLIENT_ID=... MCP_CLIENT_SECRET=... /usr/bin/node scripts/manual-run.js >> /var/log/auto-itinerary.log 2>&1
+   ```
+   `scripts/manual-run.js` runs the exact same production code (`onLoad` + the job's `handler`,
+   pulled directly off `src/index.js`'s exports — not a reimplementation) against your real mailbox
+   and TREK instance, backed by its own real `node:sqlite` ledger for correct idempotency — safe to
+   run repeatedly, and it marks messages processed for real so there's no double-processing even if
+   TREK's own scheduler starts working later. See its file header for the full env var list.
+
+   Every trip built (by either path) is owned by whichever TREK user created the machine client in
+   step 3; there's no per-family-member routing yet (planned, see the project plan).
 
 ## Publishing to the community registry (later, optional)
 
@@ -110,6 +152,9 @@ See the project plan for details.
 - `node scripts/e2e-mcp.js` runs the real MCP trip-building pipeline against a live TREK instance —
   set `E2E_TREK_BASE_URL`/`E2E_MCP_CLIENT_ID`/`E2E_MCP_CLIENT_SECRET`; skips cleanly without them.
   `E2E_DRY_RUN=1` only prints live tool schemas without creating anything.
+- `node scripts/manual-run.js` runs the real, unmodified `onLoad` + `poll-inbox` job handler against
+  a real mailbox and TREK instance, on demand — see "Setup & Deployment" step 4 above for the full
+  env var list and why you might need this as a host-cron replacement for TREK's own scheduler.
 
 ## License
 
