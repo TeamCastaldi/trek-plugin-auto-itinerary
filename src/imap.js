@@ -91,4 +91,12 @@ async function markProcessed(connection, config, uid, log) {
   }
 }
 
-module.exports = { openConnection, searchUnseen, markProcessed };
+/**
+ * Get the underlying node-imap instance from an imap-simple connection.
+ * Used by IDLE listener to attach raw event handlers.
+ */
+function getUnderlyingImap(connection) {
+  return connection.imap;
+}
+
+module.exports = { openConnection, searchUnseen, markProcessed, getUnderlyingImap };

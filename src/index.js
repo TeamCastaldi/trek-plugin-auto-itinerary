@@ -6,6 +6,7 @@ const { classifyEvent } = require('./classify');
 const { createSession } = require('./mcp/client');
 const { filterActiveEvents, buildTripForMessage } = require('./mcp/orchestrate');
 const ledger = require('./ledger');
+const { initializeIdleMonitor, shutdownIdleMonitor, isIdleConnected } = require('./imap-monitor');
 
 const LEDGER_SCHEMA = `
 CREATE TABLE IF NOT EXISTS processed_invites (
@@ -24,6 +25,14 @@ module.exports = definePlugin({
   async onLoad(ctx) {
     await ctx.db.migrate('001_processed_invites', LEDGER_SCHEMA);
     ctx.log.info('auto-itinerary loaded');
+
+    // Initialize IDLE listener for real-time mail processing
+    try {
+      await initializeIdleMonitor(ctx, processMessage);
+    } catch (err) {
+      ctx.log.error(`failed to initialize IDLE monitor: ${err.message}`);
+      // Non-fatal; polling jobs will still work
+    }
   },
 
   jobs: [
@@ -35,6 +44,31 @@ module.exports = definePlugin({
         try {
           const messages = await searchUnseen(connection, ctx.config);
           ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
+
+          for (const message of messages) {
+            await processMessage(ctx, connection, message);
+          }
+        } finally {
+          connection.end();
+        }
+      },
+    },
+    {
+      id: 'idle-fallback',
+      schedule: '0 * * * *',
+      async handler(ctx) {
+        // Hourly safety-net poll: only runs if IDLE is not actively connected
+        // This ensures we catch any mail missed during IDLE downtime
+        if (isIdleConnected()) {
+          ctx.log.info('idle-fallback: IDLE connected, skipping fallback poll');
+          return;
+        }
+
+        ctx.log.info('idle-fallback: IDLE not connected, running fallback poll...');
+        const connection = await openConnection(ctx.config);
+        try {
+          const messages = await searchUnseen(connection, ctx.config);
+          ctx.log.info(`idle-fallback: found ${messages.length} unseen message(s)`);
 
           for (const message of messages) {
             await processMessage(ctx, connection, message);
