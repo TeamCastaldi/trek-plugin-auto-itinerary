@@ -83,7 +83,7 @@ async function shutdownIdleMonitor() {
  * @returns {boolean}
  */
 function isIdleConnected() {
-  return idleListener && idleListener.isConnected();
+  return !!(idleListener && idleListener.isConnected());
 }
 
 /**
