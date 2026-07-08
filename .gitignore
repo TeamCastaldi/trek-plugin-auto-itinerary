@@ -4,3 +4,4 @@ plugin.zip
 npm-debug.log*
 /trek-plugin.json
 /.trek-dev/
+scripts/.manual-run-ledger.sqlite

@@ -32,6 +32,19 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
   `APP_URL` hostname, never `127.0.0.1`.
 - Directory name (`trek-plugin-auto-itinerary`) not matching manifest `id` (`auto-itinerary`) is only a
   `validate` **warning** — confirmed empirically, not a blocker.
+- **TREK's own job scheduler does not reliably invoke a sideloaded plugin's declared `jobs`** — the
+  wiki documents "TREK owns the cron and calls your handler," but on the real family instance
+  (self-hosted, v3.2.1) `poll-inbox` was never invoked automatically across multiple
+  activate/deactivate/restart cycles, with valid, saved config, over 20+ minutes of observation and
+  zero related lines in the container's logs. Root cause is on TREK's side, not fixable in this
+  plugin's code. **Confirmed working interim path:** `scripts/manual-run.js` runs the exact same
+  production code (`onLoad` + the job's `handler`, unmodified) on demand — put it on a **host-level
+  cron** (not TREK's) for real automated ingestion. See README's Setup & Deployment section.
+- **Sideloaded plugins may have no settings UI at all** — confirmed on the real instance: the only
+  `...` menu options were Restart/View error logs/Delete, no Configure/Settings. Settings still have
+  a real backend home (`GET`/`PUT /api/admin/plugins/:id/config`, confirmed via direct browser
+  `fetch()` calls) — the API wraps the stored value in `{ config: {...} }` on read, but `PUT` expects
+  the flat settings object as the body directly (not re-wrapped), storing it as-is.
 
 ## Open TODOs
 
@@ -46,11 +59,27 @@ against `src/imap.js`'s captured `To`/`Cc` headers (mirroring the existing `send
 convention), first-match-wins, falling back unchanged to the base single-account settings when
 nothing matches (fully backward-compatible for single-account installs).
 
-### TODO M8 — Package, sign, publish
+### TODO M8 — Publish to the community registry (long-term, optional)
 
-`trek-plugin-sdk validate` + `pack`, `keygen`/`sign` (Ed25519), sideload to Admin → Plugins; optionally
-a `docs/screenshot.png` (note: `docs/` is excluded from the packed artifact, so this only matters for
-the registry listing) and a registry PR to `mauriceboe/TREK-Plugins`.
+**Short-term deployment (private/single-account use) is done** — confirmed working against the real
+family instance; see README's Setup & Deployment section for the actual steps (`pack` → sideload via
+Admin → Plugins → activate → configure settings). No signing, no GitHub release, no registry PR
+needed for that path at all.
+
+This TODO is only for *eventually* publishing to the public `mauriceboe/TREK-Plugins` registry, so
+other TREK users can install it — not required for our own use:
+
+- `keygen`/`sign` (Ed25519) — sideloaded installs never require this; it only matters for
+  registry-verified installs (trust-on-first-use key pinning).
+- A real `docs/screenshot.png` or similar (note: `docs/` is excluded from the packed artifact, so
+  this only matters for the README, not the zip) — `trek-plugin preflight`'s README gate requires
+  `## What it does`/`## Screenshots`/`## Permissions`/`## Setup` sections, ≥400 chars of real prose,
+  at least one resolvable screenshot image, and every declared manifest permission mentioned in the
+  README's prose.
+- A tagged GitHub release with the packed `plugin.zip` as a release asset.
+- `trek-plugin entry` (builds the registry JSON entry from the manifest + release + optional
+  signature) → `preflight` (runs the registry's CI checks locally, over the network, before opening
+  a PR) → `submit` (forks `mauriceboe/TREK-Plugins`, commits the entry, opens the PR).
 
 ### TODO M9 (v1.1) — Modular Extraction & Router
 
@@ -202,11 +231,38 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     `test/mcp-integration.test.js` throughout, including a `get_trip_summary` mock in every
     orchestrate test that reaches day resolution and a new test asserting the explicit
     date-not-found error (73 total tests). Renumbered the roadmap to make room: multi-account
-    routing is now **M7**, packaging is **M8**, and the v1.1 unstructured-ingestion milestones are
-    now **M9–M12**. **Confirmed live** (2026-07-07): a full non-dry-run `npm run e2e:mcp` against
-    `travel.castaldifamily.com` for all three remaining fixtures — `flight.ics` (trip 5,
-    `create_transport`), `hotel.ics` (trip 6, `create_accommodation`), `generic.ics` (trip 7,
-    `create_reservation`) — each completed end-to-end with **zero schema-guess mismatches** and
-    rendered correctly in the app. TODO M6 is fully closed. Five trips from this milestone's live
-    debugging (ids 3–7, two throwaway/broken plus three working confirmations) are safe to delete
-    manually from the app — there is no `delete_trip` tool.
+    routing is now **M7**, community-registry publishing is **M8**, and the v1.1
+    unstructured-ingestion milestones are now **M9–M12**. **Confirmed live** (2026-07-07): a full
+    non-dry-run `npm run e2e:mcp` against `travel.castaldifamily.com` for all three remaining
+    fixtures — `flight.ics` (trip 5, `create_transport`), `hotel.ics` (trip 6,
+    `create_accommodation`), `generic.ics` (trip 7, `create_reservation`) — each completed
+    end-to-end with **zero schema-guess mismatches** and rendered correctly in the app. TODO M6 is
+    fully closed. Five trips from this milestone's live debugging (ids 3–7, two throwaway/broken
+    plus three working confirmations) are safe to delete manually from the app — there is no
+    `delete_trip` tool.
+  - **Sideload deployment confirmed** (2026-07-07): `npm run pack` → Admin → Plugins upload on
+    `travel.castaldifamily.com` succeeded, no signing required, landed inactive, activated
+    manually, settings configured. This is the complete deployment path for private/single-account
+    use — see README's Setup & Deployment section. Split TODO M8 (previously "Package, sign, publish") into
+    this now-done short-term path and a long-term-only "publish to the community registry" TODO.
+  - **Live end-to-end mail test + TREK scheduler investigation** (2026-07-07): sent a real external
+    test email (with a real `.ics` attachment) to the monitored mailbox and found it was never
+    ingested. Root-caused through a full diagnostic pass: confirmed IMAP connectivity/credentials
+    were correct throughout (`scripts/smoke-imap.js`, after fixing it — see below); discovered the
+    sideloaded plugin had **no settings UI** at all (only Restart/Error log/Delete in its menu), so
+    `ctx.config` had been empty since install; configured real settings via direct
+    `PUT /api/admin/plugins/auto-itinerary/config` calls (confirming the API's request/response
+    wrapping asymmetry, documented above); then, even with valid config and a Restart, TREK's own
+    cron still never invoked `poll-inbox` (re-confirmed with a second, untouched test email and a
+    live docker-logs tail showing zero plugin/scheduler activity) — a platform-level gap, not
+    something in this plugin's code. Along the way: fixed `scripts/smoke-imap.js`, which had rotted
+    since M4's `src/imap.js` refactor and crashed immediately (`fetchUnseenMessages` no longer
+    exists — replaced with `openConnection`/`searchUnseen`); added `scripts/manual-run.js`, which
+    runs the real, unmodified `onLoad` + job `handler` (pulled directly off `src/index.js`'s
+    exports) against a real mailbox/TREK instance, backed by a real `node:sqlite` ledger for correct
+    idempotency — used to prove the pipeline itself works perfectly (built a real trip end-to-end
+    from a genuine external email) independent of TREK's scheduler, and is now the documented
+    interim path to real automation via a host-level cron entry (see README). Also fielded and
+    disregarded, with independent re-verification against the wiki, an unsolicited/unverifiable
+    message claiming the opposite architecture (plugins must self-schedule via `setInterval`) —
+    treated as an unreliable source rather than acted on.
