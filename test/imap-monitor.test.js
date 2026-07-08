@@ -143,6 +143,7 @@ test('IMAP Monitor prevents double initialization', async (t) => {
 
 test('IMAP Monitor mail handler guards against concurrent invocations', async (t) => {
   const { initializeIdleMonitor, shutdownIdleMonitor } = require('../src/imap-monitor');
+  const Module = require('node:module');
 
   await shutdownIdleMonitor();
 
@@ -178,18 +179,36 @@ test('IMAP Monitor mail handler guards against concurrent invocations', async (t
     createIdleListenerFn: () => fakeListener,
   };
 
-  await initializeIdleMonitor(mockCtx, mockProcessMessage, deps);
+  // Mock require('./imap') to prevent real IMAP connections
+  const originalRequire = Module.prototype.require;
+  Module.prototype.require = function (id) {
+    if (id === './imap') {
+      return {
+        openConnection: async () => ({ end: () => {} }),
+        searchUnseen: async () => [],
+        markProcessed: async () => {},
+      };
+    }
+    return originalRequire.apply(this, arguments);
+  };
 
-  // Simulate concurrent mail events
-  if (capturedMailHandler) {
-    const p1 = capturedMailHandler();
-    const p2 = capturedMailHandler(); // Should be guarded
+  try {
+    await initializeIdleMonitor(mockCtx, mockProcessMessage, deps);
 
-    await Promise.all([p1, p2]);
+    // Simulate concurrent mail events
+    if (capturedMailHandler) {
+      const p1 = capturedMailHandler();
+      const p2 = capturedMailHandler(); // Should be guarded
 
-    // Only one should have completed due to guard
-    assert.strictEqual(processMessageCallCount, 1, 'Should have processed only once due to guard');
+      await Promise.all([p1, p2]);
+
+      // Only one should have completed due to guard
+      assert.strictEqual(processMessageCallCount, 1, 'Should have processed only once due to guard');
+    }
+
+    await shutdownIdleMonitor();
+  } finally {
+    // Restore original require
+    Module.prototype.require = originalRequire;
   }
-
-  await shutdownIdleMonitor();
 });
