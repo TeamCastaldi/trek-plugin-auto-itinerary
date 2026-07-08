@@ -5,9 +5,10 @@ const { createIdleListener, STATE } = require('../src/imap-idle');
 // Create a fake IMAP connection for testing
 function createFakeImapConnection() {
   const listeners = {};
+  const caps = ['IDLE', 'APPEND'];
   return {
     imap: {
-      serverCapabilities: ['IDLE', 'APPEND'],
+      serverSupports: (cap) => caps.includes(cap),
       state: 'authenticated',
       on: (event, handler) => {
         listeners[event] = handler;
@@ -106,7 +107,7 @@ test('IMAP IDLE listener handles missing IDLE capability', async (t) => {
   const deps = {
     openConnectionFn: async () => {
       const conn = createFakeImapConnection();
-      conn.imap.serverCapabilities = ['APPEND']; // No IDLE
+      conn.imap.serverSupports = (cap) => cap === 'APPEND'; // No IDLE
       return conn;
     },
     getUnderlyingImapFn: (conn) => conn.imap,

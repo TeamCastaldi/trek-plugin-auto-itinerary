@@ -57,7 +57,7 @@ function createIdleListener(config, callbacks, log, deps = {}) {
       const imapConn = getUnderlyingImapFn(connection);
 
       // Check if server supports IDLE
-      if (!imapConn.serverCapabilities.includes('IDLE')) {
+      if (!imapConn.serverSupports('IDLE')) {
         log.warn('imap-idle: server does not support IDLE, falling back to polling');
         closeConnection();
         setState(STATE.DISCONNECTED);
