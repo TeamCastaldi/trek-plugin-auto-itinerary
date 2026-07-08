@@ -13,12 +13,6 @@ function createFakeImapConnection() {
       on: (event, handler) => {
         listeners[event] = handler;
       },
-      idle: (cb) => {
-        process.nextTick(() => cb(null));
-      },
-      idleDone: (cb) => {
-        process.nextTick(() => cb(null));
-      },
     },
     openBox: async () => {},
     end: () => {},

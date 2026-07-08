@@ -36,7 +36,6 @@ function createIdleListener(config, callbacks, log, deps = {}) {
   const getUnderlyingImapFn = deps.getUnderlyingImapFn || getUnderlyingImap;
   let connection = null;
   let state = STATE.DISCONNECTED;
-  let idleAbort = null;
   let reconnectTimeout = null;
   let reconnectAttempt = 0;
   let mailHandler = null;
@@ -102,14 +101,11 @@ function createIdleListener(config, callbacks, log, deps = {}) {
         log.info(`imap-idle: server alert: ${msg}`);
       });
 
-      // Start IDLE mode
-      await new Promise((resolve, reject) => {
-        imapConn.idle((err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-
+      // node-imap has no public idle()/idleDone() API — IDLE is entirely automatic, driven by
+      // its `keepalive` option (on by default), which enters IDLE as soon as the connection is
+      // authenticated with no command in flight, and re-enters it after each auto DONE/NOOP
+      // cycle. We just need the connection open and listening; the `mail` event fires whenever
+      // the server pushes new messages, IDLE or not.
       log.info('imap-idle: IDLE mode active, listening for mail...');
       reconnectAttempt = 0; // Reset on successful connection
       return true;
@@ -190,22 +186,9 @@ function createIdleListener(config, callbacks, log, deps = {}) {
         reconnectTimeout = null;
       }
 
-      // Close connection gracefully
-      if (connection) {
-        try {
-          const imapConn = getUnderlyingImapFn(connection);
-          if (imapConn.state === 'idle' && typeof imapConn.idleDone === 'function') {
-            // Exit IDLE mode before closing
-            imapConn.idleDone((err) => {
-              if (err) log.warn(`imap-idle: error exiting IDLE: ${err.message}`);
-            });
-          }
-        } catch (err) {
-          log.warn(`imap-idle: error exiting IDLE: ${err.message}`);
-        }
-
-        closeConnection();
-      }
+      // node-imap has no public idleDone() — end() itself exits any in-progress IDLE and closes
+      // the connection cleanly.
+      closeConnection();
 
       setState(STATE.DISCONNECTED);
       log.info('imap-idle: listener stopped');
