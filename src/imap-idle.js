@@ -144,6 +144,11 @@ function createIdleListener(config, callbacks, log, deps = {}) {
         }
       });
     }, delay);
+    // Don't let a pending reconnect keep the process alive on its own — stop()/process exit
+    // should be able to happen even mid-backoff.
+    if (typeof reconnectTimeout.unref === 'function') {
+      reconnectTimeout.unref();
+    }
   }
 
   function closeConnection() {

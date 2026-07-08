@@ -2,7 +2,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createMockHost } = require('trek-plugin-sdk/testing');
 const plugin = require('../src/index');
+const { shutdownIdleMonitor } = require('../src/imap-monitor');
 const { processMessage } = plugin;
+
+// onLoad starts a real (non-injected) IDLE listener; without a real mailbox to connect to it
+// fails and schedules a background reconnect. Shut it down after each test that calls onLoad so
+// no listener/timer leaks into the next test file.
+test.afterEach(async () => {
+  await shutdownIdleMonitor();
+});
 
 test('onLoad succeeds and migrates the ledger schema under the plugin\'s own db:own grant', async () => {
   const { ctx, calls } = createMockHost({ grants: ['db:own'] });
