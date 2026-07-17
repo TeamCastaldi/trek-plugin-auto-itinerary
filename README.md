@@ -16,15 +16,23 @@ optional `create_share_link`), and the idempotency ledger (one trip per invite, 
 cancellation handling), including with genuine external test emails. Today every trip is built
 under **one** TREK account (whichever user owns the configured MCP machine client) —
 per-family-member routing to separate accounts is planned (see the project plan for the milestone
-breakdown). **Known gap:** on at least one real self-hosted instance, TREK's own scheduler never
-invoked the plugin's `poll-inbox` job automatically — see step 4 of Setup & Deployment below for
-the confirmed-working host-cron alternative.
+breakdown).
+
+Ingestion polls the mailbox every 60 seconds via `ctx.scheduler` (armed at `onLoad`, requires TREK
+**v3.3.0+**) rather than a declarative `jobs[]` cron entry — on an earlier TREK version (v3.2.1), the
+plugin's declared `poll-inbox` job was **confirmed to never be invoked** by TREK's own scheduler at
+all, across multiple activate/deactivate/restart cycles. `ctx.scheduler` arms itself at runtime and
+reports back whether arming succeeded, instead of a declarative array the host silently either does
+or doesn't honor. A host-level cron fallback (`scripts/manual-run.js`) is still documented in step 4
+of Setup & Deployment below, in case `ctx.scheduler` turns out to have gaps of its own on your
+instance, or you're running a TREK version that predates it.
 
 ## Permissions
 
 | Permission | Why |
 |---|---|
-| `db:own` | Isolated SQLite ledger (`processed_invites`) to guarantee one trip per invite, even across repeated cron runs. |
+| `db:own` | Isolated SQLite ledger (`processed_invites`) to guarantee one trip per invite, even across repeated polls. |
+| `jobs:run` | Required by `ctx.scheduler` (arms the 60s poll-inbox timer in `onLoad`) — runs userless, same restriction class as the old `jobs[]` mechanism. |
 | `http:outbound:<host>` + matching `egress` entry | One per host this plugin connects to: the IMAP host and the TREK instance's own host (for MCP calls). Generated at build time — see below. |
 
 ### Manifest generation (`trek-plugin.json`)
@@ -108,21 +116,25 @@ upload.
    primary account is what this plugin logs into IMAP as. Confirmed empirically: authenticating as the
    alternate address fails, authenticating as the primary account succeeds and sees the alternate
    address's mail.
-4. **`poll-inbox` is declared to run every 5 minutes once activated, but confirm this actually
-   happens on your instance before relying on it.** On the real family instance (self-hosted TREK
-   v3.2.1), the plugin's job was never invoked by TREK's own scheduler at all — confirmed via
-   multiple activate/deactivate/Restart cycles, valid saved settings, and a live docker-logs tail
-   showing zero scheduler/plugin activity over 20+ minutes. This is a platform-level gap, not
-   something this plugin's code can fix. **If the same thing happens to you**, run the pipeline via
-   a **host-level cron** instead of relying on TREK's:
+4. **Ingestion starts on its own once the plugin is activated with valid settings** — `onLoad` arms
+   a `ctx.scheduler` timer that polls the mailbox every 60 seconds and survives restarts. Check
+   **Admin → Plugins → View error log** (or your instance's container logs) for a line like
+   `auto-itinerary loaded (poll-inbox scheduler armed: true)` to confirm it actually armed.
+
+   **If it doesn't seem to be picking up mail** (or you're on TREK <3.3.0, which predates
+   `ctx.scheduler` entirely): an earlier version of this plugin used a declarative `jobs[]` cron
+   entry instead, and that mechanism was confirmed to never be invoked at all by TREK's own
+   scheduler on the real family instance (self-hosted TREK v3.2.1) — multiple activate/deactivate/
+   Restart cycles, valid saved settings, zero scheduler activity in the logs. If `ctx.scheduler`
+   turns out to have a similar gap, fall back to a **host-level cron** instead of relying on TREK's:
    ```cron
    */5 * * * * cd /path/to/trek-plugin-auto-itinerary && IMAP_HOST=imap.gmail.com IMAP_PORT=993 IMAP_TLS=tls IMAP_USER=you@example.com IMAP_PASSWORD="..." TREK_BASE_URL=https://trek.example.com MCP_CLIENT_ID=... MCP_CLIENT_SECRET=... /usr/bin/node scripts/manual-run.js >> /var/log/auto-itinerary.log 2>&1
    ```
-   `scripts/manual-run.js` runs the exact same production code (`onLoad` + the job's `handler`,
-   pulled directly off `src/index.js`'s exports — not a reimplementation) against your real mailbox
-   and TREK instance, backed by its own real `node:sqlite` ledger for correct idempotency — safe to
-   run repeatedly, and it marks messages processed for real so there's no double-processing even if
-   TREK's own scheduler starts working later. See its file header for the full env var list.
+   `scripts/manual-run.js` runs the exact same production `onLoad` + `pollInbox` code, pulled
+   directly off `src/index.js`'s exports (not a reimplementation), against your real mailbox and
+   TREK instance, backed by its own real `node:sqlite` ledger for correct idempotency — safe to run
+   repeatedly, and it marks messages processed for real so there's no double-processing even once
+   the in-plugin scheduler is also working. See its file header for the full env var list.
 
    Every trip built (by either path) is owned by whichever TREK user created the machine client in
    step 3; there's no per-family-member routing yet (planned, see the project plan).
@@ -139,11 +151,11 @@ See the project plan for details.
 
 - `npm run dev` runs locally against `trek-plugin-sdk dev` (loads `dev-fixtures.json` for
   `ctx.trips`/`ctx.users` if present — this plugin doesn't read either, so it's intentionally
-  minimal). Note: `dev` only calls `onLoad` and serves any `routes` — it does not execute the
-  `poll-inbox` cron job, so it's useful for confirming the manifest/permissions load cleanly, not
-  for exercising the ingestion pipeline.
-- `npm test` runs the fixture-based unit tests (65+ tests: IMAP fetch, `.ics` extraction/parsing,
-  event classification, MCP orchestration, ledger, permission scoping).
+  minimal). `onLoad` really arms the scheduler here too (the dev CLI delegates `ctx.scheduler` to
+  the same mock host used in tests, gated on the manifest's granted `jobs:run`) — you can manually
+  fire it without waiting 60s via `curl -X POST http://localhost:4317/__dev/fire/scheduled/poll-inbox`.
+- `npm test` runs the fixture-based unit tests (75+ tests: IMAP fetch, `.ics` extraction/parsing,
+  event classification, MCP orchestration, ledger, permission scoping, scheduler arming/dispatch).
 - `npm run smoke` loads the packed bundle in a scratch directory with no real `node_modules` besides
   a stubbed `trek-plugin-sdk`, to catch any dependency esbuild failed to bundle.
 - `node scripts/smoke-imap.js` runs a real IMAP connect against a live mailbox — set
@@ -152,9 +164,9 @@ See the project plan for details.
 - `node scripts/e2e-mcp.js` runs the real MCP trip-building pipeline against a live TREK instance —
   set `E2E_TREK_BASE_URL`/`E2E_MCP_CLIENT_ID`/`E2E_MCP_CLIENT_SECRET`; skips cleanly without them.
   `E2E_DRY_RUN=1` only prints live tool schemas without creating anything.
-- `node scripts/manual-run.js` runs the real, unmodified `onLoad` + `poll-inbox` job handler against
-  a real mailbox and TREK instance, on demand — see "Setup & Deployment" step 4 above for the full
-  env var list and why you might need this as a host-cron replacement for TREK's own scheduler.
+- `node scripts/manual-run.js` runs the real, unmodified `onLoad` + `pollInbox` code against a real
+  mailbox and TREK instance, on demand — see "Setup & Deployment" step 4 above for the full env var
+  list. This is now a documented fallback rather than the primary path (see "What it does" above).
 
 ## License
 

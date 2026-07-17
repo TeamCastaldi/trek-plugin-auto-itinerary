@@ -2,11 +2,12 @@ const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
 /**
- * Runs the REAL, unmodified production plugin code (`onLoad` + the `poll-inbox` job's `handler`,
- * taken directly off `src/index.js`'s exports — not a reimplementation) against a real IMAP
- * mailbox and a real TREK instance, from this machine. Useful when you want to prove the pipeline
- * itself works without waiting on TREK's own cron scheduler (e.g. while debugging why a sideloaded
- * plugin isn't executing its job at all).
+ * Runs the REAL, unmodified production plugin code (`onLoad` + `pollInbox`, taken directly off
+ * `src/index.js`'s exports — not a reimplementation) against a real IMAP mailbox and a real TREK
+ * instance, from this machine. Primary ingestion now runs via `ctx.scheduler` (armed in `onLoad`,
+ * fires every 60s — see CLAUDE.md); this script is the documented fallback for TREK instances
+ * where that turns out to be unreliable too, or that are on TREK <3.3.0 without `ctx.scheduler` at
+ * all. Put it on a host-level cron in that case.
  *
  * Backed by a real local SQLite ledger (`node:sqlite`, Node 22.5+) at
  * scripts/.manual-run-ledger.sqlite so idempotency behaves exactly like production and repeated
@@ -90,15 +91,20 @@ async function main() {
       warn: (msg) => console.warn(`[plugin:warn] ${msg}`),
       error: (msg) => console.error(`[plugin:error] ${msg}`),
     },
+    // This script calls pollInbox directly and never fires the real scheduler, but onLoad still
+    // calls ctx.scheduler.every() unconditionally — stub it so onLoad doesn't throw here.
+    scheduler: {
+      every: async () => ({ scheduled: false }),
+    },
   };
 
   try {
     // The real, unmodified plugin export — not a reimplementation.
     const plugin = require('../src/index');
     await plugin.onLoad(ctx);
-    console.log('[manual-run] onLoad complete, running poll-inbox handler for real...');
-    await plugin.jobs[0].handler(ctx);
-    console.log('[manual-run] poll-inbox handler completed.');
+    console.log('[manual-run] onLoad complete, running pollInbox for real...');
+    await plugin.pollInbox(ctx);
+    console.log('[manual-run] pollInbox completed.');
   } finally {
     close();
   }
