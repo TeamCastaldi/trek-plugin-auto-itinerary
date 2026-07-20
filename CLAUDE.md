@@ -32,14 +32,33 @@ number. Reference TODOs by their milestone number (e.g. "work on TODO M3").
   `APP_URL` hostname, never `127.0.0.1`.
 - Directory name (`trek-plugin-auto-itinerary`) not matching manifest `id` (`auto-itinerary`) is only a
   `validate` **warning** — confirmed empirically, not a blocker.
-- **TREK's own job scheduler does not reliably invoke a sideloaded plugin's declared `jobs`** — the
-  wiki documents "TREK owns the cron and calls your handler," but on the real family instance
-  (self-hosted, v3.2.1) `poll-inbox` was never invoked automatically across multiple
-  activate/deactivate/restart cycles, with valid, saved config, over 20+ minutes of observation and
-  zero related lines in the container's logs. Root cause is on TREK's side, not fixable in this
-  plugin's code. **Confirmed working interim path:** `scripts/manual-run.js` runs the exact same
-  production code (`onLoad` + the job's `handler`, unmodified) on demand — put it on a **host-level
-  cron** (not TREK's) for real automated ingestion. See README's Setup & Deployment section.
+- **TREK's own job scheduler did not reliably invoke a sideloaded plugin's declared `jobs`** (as of
+  v3.2.1) — the wiki documented "TREK owns the cron and calls your handler," but on the real family
+  instance `poll-inbox` was never invoked automatically across multiple activate/deactivate/restart
+  cycles, with valid, saved config, over 20+ minutes of observation and zero related lines in the
+  container's logs. **Superseded**: as of TREK v3.3.0 / `trek-plugin-sdk@1.4.1`, ingestion is armed
+  via `ctx.scheduler.every(ms, name, payload?)` in `onLoad` instead of a declared `jobs[]` cron entry
+  — see the bullet below. `scripts/manual-run.js` (which runs the exact same production `onLoad` +
+  `pollInbox` code on demand, put on a **host-level cron**) is kept as a documented fallback rather
+  than removed, in case `ctx.scheduler` has gaps of its own, or the target instance predates v3.3.0.
+  See README's Setup & Deployment section.
+- **`ctx.scheduler` (TREK v3.3.0+ / SDK 1.4.1+) is the current ingestion trigger**, replacing the old
+  `jobs[]` declaration — verified directly against the installed SDK's `dist/index.d.ts` and
+  `dist/mock-host.js`, not the wiki. Real signature:
+  `{ at(whenMs, name, payload?), in(ms, name, payload?), every(ms, name, payload?), cancel(name) }`,
+  each returning `{scheduled: boolean}`/`{cancelled: boolean}` — a real, observable arming result,
+  unlike the old declarative array. `every`'s interval floor is 60_000ms; it's an upsert by name, so
+  calling it on every `onLoad` is safe. Requires the **`jobs:run`** permission (every `scheduler.*`
+  call does `need('jobs:run', ...)` — this was NOT required for the old `jobs[]` array, so it had to
+  be newly added to `trek-plugin.template.json`). Fires into a new top-level
+  `scheduled({name, payload}, ctx)` handler on the plugin definition, userless (same restriction
+  class as `jobs[]`/`onLoad` — no `ctx.trips`/etc). `trek-plugin-sdk/testing`'s `createMockHost`
+  models this: `host.run(pluginDef).scheduled(name, payload?)` fires it against `userlessCtx`, and
+  `host.scheduled` (a `Map<name, {dueAt, everyMs, payload}>`) records what got armed — both are
+  first-class, not hand-rolled. `trek-plugin-sdk dev`'s dev context delegates `ctx.scheduler` to the
+  same mock host, gated on the manifest's granted `jobs:run`, and exposes
+  `POST /__dev/fire/scheduled/<name>` to manually trigger it locally — confirmed by actually running
+  `npm run dev` and firing that endpoint, not just reading the source.
 - **Sideloaded plugins may have no settings UI at all** — confirmed on the real instance: the only
   `...` menu options were Restart/View error logs/Delete, no Configure/Settings. Settings still have
   a real backend home (`GET`/`PUT /api/admin/plugins/:id/config`, confirmed via direct browser
@@ -266,3 +285,80 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     disregarded, with independent re-verification against the wiki, an unsolicited/unverifiable
     message claiming the opposite architecture (plugins must self-schedule via `setInterval`) —
     treated as an unreliable source rather than acted on.
+  - **Ingestion trigger: `jobs[poll-inbox]` → `ctx.scheduler`** (TREK v3.3.0 / `trek-plugin-sdk@1.4.1`).
+    A separate attempt to fix the scheduler gap above by switching ingestion to a push-based Resend
+    webhook was built, tested end-to-end, and explicitly backed out (PR #8 closed unmerged) — the
+    decision was to minimize external dependencies and stay within TREK's own plugin mechanisms.
+    `ctx.scheduler.every(60_000, 'poll-inbox')` is now armed in `onLoad` (upsert by name, safe on
+    every restart/reload) instead of a declared `jobs: [{id, schedule}]` array, firing into a new
+    `scheduled({name, payload}, ctx)` handler. The old `jobs[0].handler` body (IMAP connect →
+    `searchUnseen` → loop `processMessage` → `finally connection.end()`) was extracted verbatim into
+    a standalone exported `pollInbox(ctx)`, called both from `scheduled()` and directly by
+    `scripts/manual-run.js` (which no longer reaches into `plugin.jobs[0].handler` — that array no
+    longer exists). `trek-plugin.template.json` gained the `jobs:run` permission (newly required,
+    unlike the old `jobs[]`) and its `trek` compatibility range was tightened to `>=3.3.0 <4.0.0`
+    since `ctx.scheduler` doesn't exist on older hosts and installing there should fail manifest
+    validation up front rather than throw an opaque `TypeError` on first load.
+    `trek-plugin-sdk` devDependency bumped `^1.3.1` → `^1.4.1`. `test/permissions.test.js` gained
+    scheduler-specific coverage using `createMockHost`'s real `scheduled`/`run(def).scheduled(name)`
+    testing surface (confirmed to exist in the installed SDK, not hand-rolled): arming succeeds and
+    is recorded, arming without `jobs:run` throws `PERMISSION_DENIED`, firing `poll-inbox` touches no
+    `ctx` surface outside `db:own`, and an unrecognized task name is a no-op. `scripts/smoke-bundle.js`
+    now asserts `onLoad`/`scheduled`/`pollInbox` are present instead of the old `jobs[0]` shape.
+    Manually verified against the real `trek-plugin-sdk dev` CLI (not just unit tests): `onLoad` logs
+    `poll-inbox scheduler armed: true`, and `POST /__dev/fire/scheduled/poll-inbox` correctly
+    dispatches into `pollInbox` (observed a clean IMAP-connection-refused failure in the credential-
+    less dev environment, proving the dispatch wiring itself works). 77 total tests, all green. The
+    host-cron fallback (`scripts/manual-run.js`) is retained, reframed in the README as a fallback
+    rather than the default assumption of brokenness — not yet verified whether `ctx.scheduler`
+    itself is reliably invoked by TREK on the real family instance (that requires sideloading this
+    version and observing it over time, same as how the original `jobs[]` gap was discovered).
+  - **Real-instance sideload test — mixed results, `ctx.scheduler`'s in-app reliability still an open
+    question.** Confirmed TREK v3.3.0 is actually running on the family instance (container startup
+    banner). Two deployment mistakes surfaced and were fixed along the way, neither a plugin bug:
+    `trek_base_url` was misconfigured as `trek.castaldifamily.com` instead of the real
+    `travel.castaldifamily.com` (caused `/oauth/token` 404s), and the manifest's `egress[]` was baked
+    at pack time with the same wrong host — `PUT /api/admin/plugins/:id/egress-hosts` (a v3.3.0
+    `operatorEgress` feature) rejected adding the correct host at runtime with
+    `"plugin auto-itinerary did not declare operatorEgress"`, since this manifest doesn't opt into
+    that flag, so fixing egress required a full repack + re-upload.
+
+    With config corrected, the scheduler **did** fire reliably for a short observed window —
+    `poll-inbox` errors landed in the plugin's error log at ~60s intervals (`00:13:55`, `00:14:54`,
+    `00:15:54`), each one correctly finding the same test message (`uid=90482`). But after the
+    egress-corrected version was re-uploaded and the plugin restarted, `ctx.scheduler` went **silent
+    for hours** — no further log lines of any kind (not even errors), no trip built, test email still
+    unread. Root cause not identified: config was re-verified intact via a live `GET`, so it wasn't a
+    wiped-settings issue; whether `onLoad` even re-ran after that particular restart/reinstall is
+    unconfirmed, since the admin UI's "Error log" modal appears to be error-level only — `ctx.log.info`
+    (which is what "scheduler armed" and "found N unseen message(s)" log at) may not be visible there
+    at all, meaning "no errors logged" was never actually evidence that anything ran successfully.
+    **This is the same shape of gap as the original `jobs[]` problem** (a mechanism that worked in
+    isolated testing but couldn't be confirmed reliably invoking on the real sideloaded instance) —
+    open, unresolved, and worth raising with the TREK maintainer(s) directly rather than continuing to
+    guess at it blind from outside the container.
+
+    To unblock real end-to-end verification without waiting on that open question, `scripts/manual-run.js`
+    was run directly against the real mailbox/instance (bypassing TREK's scheduler entirely, calling
+    `onLoad` + `pollInbox` as plain Node) — first run failed with a genuine, previously-unknown parsing
+    bug (see next entry), second run **built a real trip successfully** (`trip 9`) from the same
+    still-unread test email. This is the actual, confirmed end-to-end proof for this milestone: the
+    ingestion → parse → classify → MCP pipeline works correctly against a real Google Calendar invite.
+    Whether `ctx.scheduler` reliably *triggers* that pipeline unattended inside TREK itself remains
+    unconfirmed — same honest caveat as the entry above, now backed by a real (partial, concerning)
+    observation instead of just "not yet tested."
+  - **Fixed a real parsing bug found via the manual-run.js test above**: `src/parse.js` assumed
+    `event.summary`/`.description`/`.location` from `node-ical` are always plain strings. True for
+    every fixture in this repo, false for a real Google Calendar-generated invite — Google adds a
+    `LANGUAGE=en` parameter (e.g. `SUMMARY;LANGUAGE=en:Flight to NYC`), which makes `node-ical` return
+    `{ params, val }` instead of a string. Reproduced directly against `node-ical` locally to confirm
+    before fixing (not assumed from the iCalendar spec). `create_trip`'s `title` was receiving that
+    object wholesale, failing MCP's input validation (`expected: "string", received: "object"`). Added
+    a `textValue()` unwrap helper in `src/parse.js` applied to `summary`/`description`/`location` (not
+    `uid`, which has no known real-world parameterization case and wasn't touched, to keep the fix
+    minimal). New regression test in `test/parse.test.js` using an inline `.ics` with parameterized
+    fields, asserting plain-string output. 78 total tests, all green. This bug was invisible to every
+    prior verification pass (unit tests, mock-host tests, `trek-plugin-sdk dev`, even the M6 live E2E
+    runs) because none of those ever fed the pipeline a real Google Calendar-generated `.ics` — only
+    hand-written fixtures and manually-crafted E2E script payloads, none of which happened to include
+    parameterized properties.

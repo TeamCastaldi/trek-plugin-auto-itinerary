@@ -20,34 +20,46 @@ CREATE TABLE IF NOT EXISTS processed_invites (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 )`;
 
+// The hard platform floor for ctx.scheduler.every() — the fastest legal interval, so there's no
+// real case for making this configurable.
+const POLL_INTERVAL_MS = 60_000;
+
 module.exports = definePlugin({
   async onLoad(ctx) {
     await ctx.db.migrate('001_processed_invites', LEDGER_SCHEMA);
-    ctx.log.info('auto-itinerary loaded');
+    // Armed at runtime (upsert by name, safe to call on every onLoad/restart) instead of a
+    // declared jobs[] cron entry — the host never reliably invoked a declared job on the real
+    // instance, but arming returns a real, observable {scheduled} signal a declarative array
+    // never gave us. See CLAUDE.md's load-bearing facts for the full history.
+    const { scheduled } = await ctx.scheduler.every(POLL_INTERVAL_MS, 'poll-inbox');
+    ctx.log.info(`auto-itinerary loaded (poll-inbox scheduler armed: ${scheduled})`);
   },
 
-  jobs: [
-    {
-      id: 'poll-inbox',
-      schedule: '*/5 * * * *',
-      async handler(ctx) {
-        const connection = await openConnection(ctx.config);
-        try {
-          const messages = await searchUnseen(connection, ctx.config);
-          ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
-
-          for (const message of messages) {
-            await processMessage(ctx, connection, message);
-          }
-        } finally {
-          connection.end();
-        }
-      },
-    },
-  ],
+  async scheduled({ name }, ctx) {
+    if (name !== 'poll-inbox') return;
+    await pollInbox(ctx);
+  },
 });
 
 module.exports.processMessage = processMessage;
+module.exports.pollInbox = pollInbox;
+
+/** The poll-inbox task body: connect, fetch unseen messages, process each. Called by the
+ * `scheduled` handler above in production, and directly by scripts/manual-run.js for the
+ * host-cron fallback path. */
+async function pollInbox(ctx) {
+  const connection = await openConnection(ctx.config);
+  try {
+    const messages = await searchUnseen(connection, ctx.config);
+    ctx.log.info(`poll-inbox: found ${messages.length} unseen message(s)`);
+
+    for (const message of messages) {
+      await processMessage(ctx, connection, message);
+    }
+  } finally {
+    connection.end();
+  }
+}
 
 /**
  * `deps` lets tests inject a fake MCP session factory / orchestrator without a live IMAP or MCP

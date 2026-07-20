@@ -69,7 +69,11 @@ arrive via `ctx.config`.
 **Execution contexts:** `routes` (bound to request user) · `jobs` (scheduled, **no user**) · `hooks`
 (bound to triggering user, short timeout — and `hook:calendar-source` is **reserved/non-functional**,
 "no core consumer calls them yet", so it is not a usable ingestion primitive) · `widget/page` (iframe).
-All run in plain forked Node child processes (not a VM sandbox).
+All run in plain forked Node child processes (not a VM sandbox). **v3.3.0+ adds `ctx.scheduler`**
+(`at`/`in`/`every`/`cancel`, needs `jobs:run`): runtime-armed, persistent timers firing into a
+`scheduled({name, payload}, ctx)` handler, same userless restriction class as `jobs` but armed by the
+plugin itself (with an observable `{scheduled: boolean}` result) instead of a declarative array the
+host has to discover — this is what `poll-inbox` now uses, see §3.
 
 **MCP server** (`server/src/mcp`, transport = `StreamableHTTPServerTransport`):
 
@@ -170,9 +174,13 @@ three land as regular `dependencies` (not `devDependencies`), bundled into `serv
 
 ## 3. Execution & workflow mapping
 
-**Job loop** (server code, no user context → cannot touch `ctx.trips.*` → all trip mutations via MCP).
-Current skeleton in `src/index.js`: `jobs: [{ id: 'poll-inbox', schedule: '*/5 * * * *', handler }]`.
-Handler is wired up with parsing and MCP orchestration (completed in M2/M3).
+**Poll loop** (server code, no user context → cannot touch `ctx.trips.*` → all trip mutations via MCP).
+Current mechanism in `src/index.js`: `ctx.scheduler.every(60_000, 'poll-inbox')`, armed in `onLoad`,
+firing into a top-level `scheduled({name, payload}, ctx)` handler that dispatches to `pollInbox(ctx)` —
+**not** a declared `jobs[]` cron entry (that mechanism was confirmed unreliable on the real instance;
+see CLAUDE.md's load-bearing facts). `pollInbox` itself (the IMAP-connect/search/process loop) and the
+MCP orchestration inside it are unchanged from M2/M3 — only the trigger changed. `scripts/manual-run.js`
+calls `pollInbox` directly as a host-cron fallback.
 
 Per-run pipeline (built in M2/M3, Strategy pattern expansion planned for v1.1/M9+):
 
@@ -265,7 +273,7 @@ including safe handling of updates and partial failures.
 | **MCP integration** | mock local HTTP server for `POST /oauth/token` + `/mcp` (`tools/list`, `create_*`); then a real local TREK docker with a machine client | token exchange, session, tool calls, share link |
 | **Packaging** | `trek-plugin-sdk validate` → `pack` | manifest/layout valid; no `node_modules`/native; within size limits |
 | **Live IMAP smoke test** | `scripts/smoke-imap.js` | passed in M2 against Gmail/Workspace, empirically confirming R1 |
-| **Bundle smoke test** | `scripts/smoke-bundle.js` (`npm run smoke`) | esbuild output loads with zero `node_modules` besides a stubbed `trek-plugin-sdk`; `onLoad`/`jobs[0]=poll-inbox` present |
+| **Bundle smoke test** | `scripts/smoke-bundle.js` (`npm run smoke`) | esbuild output loads with zero `node_modules` besides a stubbed `trek-plugin-sdk`; `onLoad`/`scheduled`/`pollInbox` present |
 
 **M5 correction (source-verified against the real installed `trek-plugin-sdk@1.3.1`, not assumed):**
 `trek-plugin-sdk dev`'s implementation (`dist/cli/dev.js`) only calls the plugin's `onLoad(ctx)` and
@@ -350,14 +358,18 @@ Two earlier throwaway/broken trips from mid-fix debugging (ids 3 and 4) plus the
   **public share link**, not membership.
 - **R3:** `create_place` may need coordinates vs a name string — read the live `inputSchema` (`tools/list`).
 - **R4:** `.ics` variety (recurring `RRULE`, all-day, timezones) — cover in fixtures.
-- **R5 (OPEN, platform-side — confirmed 2026-07-07):** TREK's job scheduler did not invoke this
-  sideloaded plugin's `poll-inbox` job at all on a real self-hosted v3.2.1 instance, contradicting
-  the wiki's documented "TREK owns the cron" behavior — see corrections table row 8. Unknown whether
-  this is sideload-specific (vs. registry-installed plugins), version-specific, or a general bug;
-  not something reproducible/fixable from this repo. Interim mitigation shipped:
-  `scripts/manual-run.js` + a host-level cron entry (documented in README). If this is ever resolved
-  upstream, or confirmed to only affect sideloads, revisit whether the host-cron workaround is still
-  needed for a from-the-registry install.
+- **R5 (partially superseded, was OPEN/platform-side — confirmed 2026-07-07):** TREK's job scheduler
+  did not invoke this sideloaded plugin's `poll-inbox` job at all on a real self-hosted v3.2.1
+  instance, contradicting the wiki's documented "TREK owns the cron" behavior — see corrections table
+  row 8. Unknown whether this was sideload-specific (vs. registry-installed plugins), version-specific,
+  or a general bug; not reproducible/fixable from this repo. Interim mitigation shipped:
+  `scripts/manual-run.js` + a host-level cron entry (documented in README). **Update:** TREK v3.3.0
+  introduced `ctx.scheduler` (see §3/execution-contexts), a runtime-armed alternative to the declared
+  `jobs[]` array that this plugin now uses for `poll-inbox` instead. This directly targets the class
+  of bug (a declarative mechanism the host may silently never honor) but has **not yet been verified
+  reliable over time on the real family instance** — only confirmed to arm correctly and dispatch
+  correctly via the real `trek-plugin-sdk dev` CLI locally. `scripts/manual-run.js` + host-cron remains
+  the documented fallback until `ctx.scheduler` is observed working reliably in production.
 
 ## Decisions (locked)
 

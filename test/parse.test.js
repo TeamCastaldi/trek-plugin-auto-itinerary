@@ -45,3 +45,29 @@ test('returns an empty array for a calendar with no VEVENTs', () => {
   const emptyCalendar = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//x//EN\r\nEND:VCALENDAR\r\n';
   assert.deepEqual(parseEvents(emptyCalendar), []);
 });
+
+test('unwraps parameterized text fields (e.g. Google Calendar\'s SUMMARY;LANGUAGE=en:...) to plain strings', () => {
+  const icsWithParams = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Google Inc//Google Calendar 70.9054//EN',
+    'BEGIN:VEVENT',
+    'DTSTART:20260801T140000Z',
+    'DTEND:20260801T150000Z',
+    'DTSTAMP:20260718T000000Z',
+    'UID:google-real-world@google.com',
+    'SUMMARY;LANGUAGE=en:Flight to NYC',
+    'LOCATION;LANGUAGE=en:JFK Airport',
+    'DESCRIPTION;LANGUAGE=en:Confirmation ABC123',
+    'STATUS:CONFIRMED',
+    'SEQUENCE:0',
+    'END:VEVENT',
+    'END:VCALENDAR',
+  ].join('\r\n');
+
+  const [event] = parseEvents(icsWithParams);
+  assert.equal(event.summary, 'Flight to NYC');
+  assert.equal(event.location, 'JFK Airport');
+  assert.equal(event.description, 'Confirmation ABC123');
+  assert.equal(typeof event.summary, 'string');
+});
