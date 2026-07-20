@@ -313,3 +313,52 @@ Add raw `.eml` fixtures for the new parser shards (AMEX, Concur). Write unit tes
     rather than the default assumption of brokenness — not yet verified whether `ctx.scheduler`
     itself is reliably invoked by TREK on the real family instance (that requires sideloading this
     version and observing it over time, same as how the original `jobs[]` gap was discovered).
+  - **Real-instance sideload test — mixed results, `ctx.scheduler`'s in-app reliability still an open
+    question.** Confirmed TREK v3.3.0 is actually running on the family instance (container startup
+    banner). Two deployment mistakes surfaced and were fixed along the way, neither a plugin bug:
+    `trek_base_url` was misconfigured as `trek.castaldifamily.com` instead of the real
+    `travel.castaldifamily.com` (caused `/oauth/token` 404s), and the manifest's `egress[]` was baked
+    at pack time with the same wrong host — `PUT /api/admin/plugins/:id/egress-hosts` (a v3.3.0
+    `operatorEgress` feature) rejected adding the correct host at runtime with
+    `"plugin auto-itinerary did not declare operatorEgress"`, since this manifest doesn't opt into
+    that flag, so fixing egress required a full repack + re-upload.
+
+    With config corrected, the scheduler **did** fire reliably for a short observed window —
+    `poll-inbox` errors landed in the plugin's error log at ~60s intervals (`00:13:55`, `00:14:54`,
+    `00:15:54`), each one correctly finding the same test message (`uid=90482`). But after the
+    egress-corrected version was re-uploaded and the plugin restarted, `ctx.scheduler` went **silent
+    for hours** — no further log lines of any kind (not even errors), no trip built, test email still
+    unread. Root cause not identified: config was re-verified intact via a live `GET`, so it wasn't a
+    wiped-settings issue; whether `onLoad` even re-ran after that particular restart/reinstall is
+    unconfirmed, since the admin UI's "Error log" modal appears to be error-level only — `ctx.log.info`
+    (which is what "scheduler armed" and "found N unseen message(s)" log at) may not be visible there
+    at all, meaning "no errors logged" was never actually evidence that anything ran successfully.
+    **This is the same shape of gap as the original `jobs[]` problem** (a mechanism that worked in
+    isolated testing but couldn't be confirmed reliably invoking on the real sideloaded instance) —
+    open, unresolved, and worth raising with the TREK maintainer(s) directly rather than continuing to
+    guess at it blind from outside the container.
+
+    To unblock real end-to-end verification without waiting on that open question, `scripts/manual-run.js`
+    was run directly against the real mailbox/instance (bypassing TREK's scheduler entirely, calling
+    `onLoad` + `pollInbox` as plain Node) — first run failed with a genuine, previously-unknown parsing
+    bug (see next entry), second run **built a real trip successfully** (`trip 9`) from the same
+    still-unread test email. This is the actual, confirmed end-to-end proof for this milestone: the
+    ingestion → parse → classify → MCP pipeline works correctly against a real Google Calendar invite.
+    Whether `ctx.scheduler` reliably *triggers* that pipeline unattended inside TREK itself remains
+    unconfirmed — same honest caveat as the entry above, now backed by a real (partial, concerning)
+    observation instead of just "not yet tested."
+  - **Fixed a real parsing bug found via the manual-run.js test above**: `src/parse.js` assumed
+    `event.summary`/`.description`/`.location` from `node-ical` are always plain strings. True for
+    every fixture in this repo, false for a real Google Calendar-generated invite — Google adds a
+    `LANGUAGE=en` parameter (e.g. `SUMMARY;LANGUAGE=en:Flight to NYC`), which makes `node-ical` return
+    `{ params, val }` instead of a string. Reproduced directly against `node-ical` locally to confirm
+    before fixing (not assumed from the iCalendar spec). `create_trip`'s `title` was receiving that
+    object wholesale, failing MCP's input validation (`expected: "string", received: "object"`). Added
+    a `textValue()` unwrap helper in `src/parse.js` applied to `summary`/`description`/`location` (not
+    `uid`, which has no known real-world parameterization case and wasn't touched, to keep the fix
+    minimal). New regression test in `test/parse.test.js` using an inline `.ics` with parameterized
+    fields, asserting plain-string output. 78 total tests, all green. This bug was invisible to every
+    prior verification pass (unit tests, mock-host tests, `trek-plugin-sdk dev`, even the M6 live E2E
+    runs) because none of those ever fed the pipeline a real Google Calendar-generated `.ics` — only
+    hand-written fixtures and manually-crafted E2E script payloads, none of which happened to include
+    parameterized properties.

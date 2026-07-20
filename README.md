@@ -9,23 +9,27 @@ inbox on a schedule, parses the `.ics` payload, and creates a fully-structured T
 transport, reservations) via TREK's built-in MCP server — so the family can follow along on a public
 share link without the traveler ever opening the app.
 
-**Status:** the full pipeline is implemented and confirmed working end-to-end against a real TREK
-instance — IMAP ingestion, `.ics` parsing, MCP trip-building (`create_trip` →
+**Status:** the ingestion → parse → classify → MCP trip-building pipeline (`create_trip` →
 `create_and_assign_place` → `create_accommodation`/`create_transport`/`create_reservation` →
-optional `create_share_link`), and the idempotency ledger (one trip per invite, update detection,
-cancellation handling), including with genuine external test emails. Today every trip is built
-under **one** TREK account (whichever user owns the configured MCP machine client) —
-per-family-member routing to separate accounts is planned (see the project plan for the milestone
-breakdown).
+optional `create_share_link`) and the idempotency ledger (one trip per invite, update detection,
+cancellation handling) are confirmed working end-to-end against a real TREK instance with a genuine
+external Google Calendar invite — but confirmed via `scripts/manual-run.js` run directly, not via the
+plugin's own in-app scheduler (see the gap below). Today every trip is built under **one** TREK
+account (whichever user owns the configured MCP machine client) — per-family-member routing to
+separate accounts is planned (see the project plan for the milestone breakdown).
 
-Ingestion polls the mailbox every 60 seconds via `ctx.scheduler` (armed at `onLoad`, requires TREK
-**v3.3.0+**) rather than a declarative `jobs[]` cron entry — on an earlier TREK version (v3.2.1), the
+**Known gap: `ctx.scheduler`'s reliability inside TREK itself is unconfirmed.** Ingestion is designed
+to poll the mailbox every 60 seconds via `ctx.scheduler` (armed at `onLoad`, requires TREK **v3.3.0+**)
+rather than a declarative `jobs[]` cron entry — because on an earlier TREK version (v3.2.1), the
 plugin's declared `poll-inbox` job was **confirmed to never be invoked** by TREK's own scheduler at
-all, across multiple activate/deactivate/restart cycles. `ctx.scheduler` arms itself at runtime and
-reports back whether arming succeeded, instead of a declarative array the host silently either does
-or doesn't honor. A host-level cron fallback (`scripts/manual-run.js`) is still documented in step 4
-of Setup & Deployment below, in case `ctx.scheduler` turns out to have gaps of its own on your
-instance, or you're running a TREK version that predates it.
+all, across multiple activate/deactivate/restart cycles. `ctx.scheduler` is a real improvement on
+that mechanism (it arms itself at runtime and reports back whether arming succeeded, instead of a
+declarative array the host silently either does or doesn't honor), and it did fire reliably for a
+short observed window on the real family instance. But after a plugin reinstall, it then went silent
+for hours with no further activity of any kind — root cause not yet identified, and not yet
+distinguishable from the original `jobs[]` gap from the outside. **Use
+`scripts/manual-run.js` on a host-level cron (documented in step 4 of Setup & Deployment below) if
+you hit the same thing** — it's the confirmed-reliable path today, same as it was for `jobs[]`.
 
 ## Permissions
 
@@ -116,17 +120,24 @@ upload.
    primary account is what this plugin logs into IMAP as. Confirmed empirically: authenticating as the
    alternate address fails, authenticating as the primary account succeeds and sees the alternate
    address's mail.
-4. **Ingestion starts on its own once the plugin is activated with valid settings** — `onLoad` arms
-   a `ctx.scheduler` timer that polls the mailbox every 60 seconds and survives restarts. Check
-   **Admin → Plugins → View error log** (or your instance's container logs) for a line like
-   `auto-itinerary loaded (poll-inbox scheduler armed: true)` to confirm it actually armed.
+4. **Ingestion is *designed* to start on its own once the plugin is activated with valid settings** —
+   `onLoad` arms a `ctx.scheduler` timer that polls the mailbox every 60 seconds and survives
+   restarts. **Don't just trust this — confirm it's actually working**, the same way the original
+   `jobs[]` gap was discovered: send a real test invite and check whether a trip actually appears
+   within ~90 seconds. On the real family instance this fired reliably for a short window right after
+   configuring settings, then went silent for hours after a plugin reinstall, with **no error logged
+   at all** — the Admin → Plugins → **View error log** panel appears to be error-level only, so it
+   won't reliably show you a healthy "scheduler armed: true" line either; absence of an error there is
+   not evidence anything is working. If you have real container/host log access, grep those directly
+   for `auto-itinerary`/`poll-inbox`/`scheduler` instead of relying on the admin UI.
 
-   **If it doesn't seem to be picking up mail** (or you're on TREK <3.3.0, which predates
+   **If ingestion doesn't seem to be picking up mail** (or you're on TREK <3.3.0, which predates
    `ctx.scheduler` entirely): an earlier version of this plugin used a declarative `jobs[]` cron
    entry instead, and that mechanism was confirmed to never be invoked at all by TREK's own
    scheduler on the real family instance (self-hosted TREK v3.2.1) — multiple activate/deactivate/
-   Restart cycles, valid saved settings, zero scheduler activity in the logs. If `ctx.scheduler`
-   turns out to have a similar gap, fall back to a **host-level cron** instead of relying on TREK's:
+   Restart cycles, valid saved settings, zero scheduler activity in the logs. `ctx.scheduler` has
+   **not been ruled out as having a similar gap** — fall back to a **host-level cron** instead of
+   relying on TREK's:
    ```cron
    */5 * * * * cd /path/to/trek-plugin-auto-itinerary && IMAP_HOST=imap.gmail.com IMAP_PORT=993 IMAP_TLS=tls IMAP_USER=you@example.com IMAP_PASSWORD="..." TREK_BASE_URL=https://trek.example.com MCP_CLIENT_ID=... MCP_CLIENT_SECRET=... /usr/bin/node scripts/manual-run.js >> /var/log/auto-itinerary.log 2>&1
    ```
